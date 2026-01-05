@@ -1,11 +1,16 @@
 package docker
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// Default timeout for Docker commands
+const defaultCommandTimeout = 30 * time.Second
 
 const (
 	DefaultImageName     = "portable-claude:latest"
@@ -21,6 +26,11 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Start(config ContainerConfig) error {
+	// Validate configuration
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("invalid container config: %w", err)
+	}
+
 	// Check if Docker is running
 	if err := m.checkDockerRunning(); err != nil {
 		return err
@@ -137,29 +147,52 @@ func (m *Manager) ExecCommand(containerName string, command ...string) (string, 
 	return string(output), nil
 }
 
-// checkDockerRunning verifies Docker daemon is running.
-func (m *Manager) checkDockerRunning() error {
-	cmd := exec.Command("docker", "info")
+// runCommandWithTimeout runs a command with a timeout.
+func (m *Manager) runCommandWithTimeout(timeout time.Duration, name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("Docker is not running. Please start Docker Desktop")
+	err := cmd.Run()
+
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("command timed out after %v", timeout)
+	}
+	return err
+}
+
+// getCommandOutputWithTimeout runs a command and returns output with a timeout.
+func (m *Manager) getCommandOutputWithTimeout(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.Output()
+
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("command timed out after %v", timeout)
+	}
+	return output, err
+}
+
+// checkDockerRunning verifies Docker daemon is running.
+func (m *Manager) checkDockerRunning() error {
+	if err := m.runCommandWithTimeout(defaultCommandTimeout, "docker", "info"); err != nil {
+		return fmt.Errorf("Docker is not running. Please start Docker Desktop: %w", err)
 	}
 	return nil
 }
 
 // imageExists checks if a Docker image exists locally.
 func (m *Manager) imageExists(imageName string) bool {
-	cmd := exec.Command("docker", "image", "inspect", imageName)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run() == nil
+	return m.runCommandWithTimeout(defaultCommandTimeout, "docker", "image", "inspect", imageName) == nil
 }
 
 // containerExists checks if a container exists (running or stopped).
 func (m *Manager) containerExists(containerName string) bool {
-	cmd := exec.Command("docker", "ps", "-a", "-q", "-f", "name=^"+containerName+"$")
-	output, err := cmd.Output()
+	output, err := m.getCommandOutputWithTimeout(defaultCommandTimeout, "docker", "ps", "-a", "-q", "-f", "name=^"+containerName+"$")
 	if err != nil {
 		return false
 	}
@@ -168,6 +201,5 @@ func (m *Manager) containerExists(containerName string) bool {
 
 // removeContainer removes a container.
 func (m *Manager) removeContainer(containerName string) error {
-	cmd := exec.Command("docker", "rm", "-f", containerName)
-	return cmd.Run()
+	return m.runCommandWithTimeout(defaultCommandTimeout, "docker", "rm", "-f", containerName)
 }

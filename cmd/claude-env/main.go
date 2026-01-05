@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeanhaley32/portable-claude-env/internal/constants"
 	"github.com/jeanhaley32/portable-claude-env/internal/docker"
 	"github.com/jeanhaley32/portable-claude-env/internal/platform"
 	"github.com/jeanhaley32/portable-claude-env/internal/repo"
@@ -59,9 +60,18 @@ func runBootstrap(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("bootstrap currently only supports macOS")
 	}
 
-	size, _ := cmd.Flags().GetInt("size")
-	apiKey, _ := cmd.Flags().GetString("api-key")
-	basePath, _ := cmd.Flags().GetString("path")
+	size, err := cmd.Flags().GetInt("size")
+	if err != nil {
+		return fmt.Errorf("invalid size flag: %w", err)
+	}
+	apiKey, err := cmd.Flags().GetString("api-key")
+	if err != nil {
+		return fmt.Errorf("invalid api-key flag: %w", err)
+	}
+	basePath, err := cmd.Flags().GetString("path")
+	if err != nil {
+		return fmt.Errorf("invalid path flag: %w", err)
+	}
 
 	// Convert to absolute path
 	absPath, err := filepath.Abs(basePath)
@@ -91,8 +101,8 @@ func runBootstrap(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("password error: %w", err)
 	}
 
-	if len(password) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+	if len(password) < constants.MinPasswordLength {
+		return fmt.Errorf("password must be at least %d characters", constants.MinPasswordLength)
 	}
 
 	fmt.Printf("Creating encrypted volume at %s...\n", volumePath)
@@ -113,13 +123,15 @@ func runBootstrap(cmd *cobra.Command, args []string) error {
 		// Mount volume to write API key
 		mountPoint, err := volumeManager.Mount(volumePath, password)
 		if err != nil {
-			fmt.Println("Warning: Could not mount volume to save API key")
+			fmt.Printf("Warning: Could not mount volume to save API key: %v\n", err)
 		} else {
 			apiKeyPath := filepath.Join(mountPoint, "auth", "api-key")
-			if err := os.WriteFile(apiKeyPath, []byte(apiKey), 0600); err != nil {
+			if err := os.WriteFile(apiKeyPath, []byte(apiKey), constants.FilePermissions); err != nil {
 				fmt.Printf("Warning: Could not save API key: %v\n", err)
 			}
-			_ = volumeManager.Unmount(mountPoint)
+			if err := volumeManager.Unmount(mountPoint); err != nil {
+				fmt.Printf("Warning: Could not unmount volume after saving API key: %v\n", err)
+			}
 		}
 	}
 
@@ -151,8 +163,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("start currently only supports macOS")
 	}
 
-	volumePathFlag, _ := cmd.Flags().GetString("volume")
-	workspaceFlag, _ := cmd.Flags().GetString("workspace")
+	volumePathFlag, err := cmd.Flags().GetString("volume")
+	if err != nil {
+		return fmt.Errorf("invalid volume flag: %w", err)
+	}
+	workspaceFlag, err := cmd.Flags().GetString("workspace")
+	if err != nil {
+		return fmt.Errorf("invalid workspace flag: %w", err)
+	}
 
 	// Create managers
 	volumeManager, err := volume.New()
@@ -167,7 +185,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	volumePath := volumePathFlag
 	if volumePath == "" {
 		// Look in current directory
-		cwd, _ := os.Getwd()
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current directory: %w", err)
+		}
 		volumePath = volumeManager.GetVolumePath(cwd)
 		if !volumeManager.Exists(volumePath) {
 			return fmt.Errorf("volume not found at %s. Run 'claude-env bootstrap' first or specify --volume", volumePath)
@@ -177,10 +198,19 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Determine workspace
 	workspacePath := workspaceFlag
 	if workspacePath == "" {
-		cwd, _ := os.Getwd()
-		workspacePath, _ = repoIdentifier.GetWorkspaceRoot(cwd)
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current directory: %w", err)
+		}
+		workspacePath, err = repoIdentifier.GetWorkspaceRoot(cwd)
+		if err != nil {
+			return fmt.Errorf("failed to determine workspace root: %w", err)
+		}
 	}
-	workspacePath, _ = filepath.Abs(workspacePath)
+	workspacePath, err = filepath.Abs(workspacePath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve workspace path: %w", err)
+	}
 
 	// Get repo ID for symlink
 	repoID, err := repoIdentifier.GetRepoID(workspacePath)
@@ -205,7 +235,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Create symlink
 	fmt.Println("Setting up shadow documentation...")
 	if err := symlinkManager.CreateSymlink(workspacePath, mountPoint, repoID); err != nil {
-		_ = volumeManager.Unmount(mountPoint)
+		if unmountErr := volumeManager.Unmount(mountPoint); unmountErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to unmount volume: %v\n", unmountErr)
+		}
 		return fmt.Errorf("failed to create symlink: %w", err)
 	}
 
@@ -219,8 +251,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := dockerManager.Start(containerConfig); err != nil {
-		_ = symlinkManager.RemoveSymlink(workspacePath)
-		_ = volumeManager.Unmount(mountPoint)
+		if symlinkErr := symlinkManager.RemoveSymlink(workspacePath); symlinkErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to remove symlink: %v\n", symlinkErr)
+		}
+		if unmountErr := volumeManager.Unmount(mountPoint); unmountErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to unmount volume: %v\n", unmountErr)
+		}
 		return fmt.Errorf("failed to start container: %w", err)
 	}
 
@@ -249,9 +285,11 @@ func runStop(cmd *cobra.Command, args []string) error {
 	dockerManager := docker.NewManager()
 	symlinkManager := symlink.NewManager()
 
-	// Get macOS volume manager for unmount
-	volumeManager, _ := volume.New()
-	macVM, ok := volumeManager.(*volume.MacOSVolumeManager)
+	// Get volume manager for unmount
+	volumeManager, err := volume.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Could not create volume manager: %v\n", err)
+	}
 
 	// Stop container
 	fmt.Println("Stopping container...")
@@ -262,8 +300,10 @@ func runStop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Clean up symlink in current directory
-	cwd, _ := os.Getwd()
-	if symlinkManager.SymlinkExists(cwd) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Could not get current directory: %v\n", err)
+	} else if symlinkManager.SymlinkExists(cwd) {
 		if err := symlinkManager.RemoveSymlink(cwd); err != nil {
 			fmt.Printf("Warning: Failed to remove symlink: %v\n", err)
 		} else {
@@ -272,7 +312,7 @@ func runStop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Unmount volume
-	if ok && macVM.IsMounted() {
+	if volumeManager != nil && volumeManager.IsMounted() {
 		fmt.Println("Unmounting volume...")
 		if err := volumeManager.Unmount(""); err != nil {
 			fmt.Printf("Warning: Failed to unmount volume: %v\n", err)
@@ -298,11 +338,20 @@ func newStatusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
-	volumePathFlag, _ := cmd.Flags().GetString("volume")
+	volumePathFlag, err := cmd.Flags().GetString("volume")
+	if err != nil {
+		return fmt.Errorf("invalid volume flag: %w", err)
+	}
 
 	// Determine paths
-	cwd, _ := os.Getwd()
-	volumeManager, _ := volume.New()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+	volumeManager, err := volume.New()
+	if err != nil {
+		return fmt.Errorf("failed to create volume manager: %w", err)
+	}
 
 	volumePath := volumePathFlag
 	if volumePath == "" {

@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/jeanhaley32/portable-claude-env/internal/constants"
 )
 
 // EnvironmentState represents the current state of the claude-env environment.
@@ -58,7 +60,7 @@ func (d *Detector) Detect() *EnvironmentState {
 	state.ContainerExists, state.ContainerRunning = d.checkContainer()
 
 	// Check symlink status
-	state.SymlinkPath = filepath.Join(d.workspacePath, "_docs")
+	state.SymlinkPath = filepath.Join(d.workspacePath, constants.DocsSymlinkName)
 	state.SymlinkExists, state.SymlinkBroken = d.checkSymlink()
 
 	return state
@@ -67,9 +69,8 @@ func (d *Detector) Detect() *EnvironmentState {
 // checkVolumeMounted checks if the ClaudeEnv volume is mounted.
 func (d *Detector) checkVolumeMounted() (string, bool) {
 	// Check common mount point
-	mountPoint := "/Volumes/ClaudeEnv"
-	if _, err := os.Stat(mountPoint); err == nil {
-		return mountPoint, true
+	if _, err := os.Stat(constants.MacOSMountPoint); err == nil {
+		return constants.MacOSMountPoint, true
 	}
 
 	// Check for numbered variants (e.g., /Volumes/ClaudeEnv 1)
@@ -79,7 +80,7 @@ func (d *Detector) checkVolumeMounted() (string, bool) {
 	}
 
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "ClaudeEnv") {
+		if strings.HasPrefix(entry.Name(), constants.MacOSVolumeName) {
 			return filepath.Join("/Volumes", entry.Name()), true
 		}
 	}
@@ -111,7 +112,7 @@ func (d *Detector) checkContainer() (exists bool, running bool) {
 
 // checkSymlink checks if the _docs symlink exists and if it's broken.
 func (d *Detector) checkSymlink() (exists bool, broken bool) {
-	symlinkPath := filepath.Join(d.workspacePath, "_docs")
+	symlinkPath := filepath.Join(d.workspacePath, constants.DocsSymlinkName)
 
 	// Check if symlink exists
 	info, err := os.Lstat(symlinkPath)

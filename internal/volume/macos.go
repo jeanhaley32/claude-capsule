@@ -9,12 +9,7 @@ import (
 	"strings"
 
 	"github.com/jeanhaley32/portable-claude-env/internal/config"
-)
-
-const (
-	macOSVolumeFile = "claude-env.sparseimage"
-	macOSMountPoint = "/Volumes/ClaudeEnv"
-	macOSVolumeName = "ClaudeEnv"
+	"github.com/jeanhaley32/portable-claude-env/internal/constants"
 )
 
 // MacOSVolumeManager implements VolumeManager using hdiutil for macOS.
@@ -26,7 +21,12 @@ func NewMacOSVolumeManager() *MacOSVolumeManager {
 }
 
 func (m *MacOSVolumeManager) Bootstrap(cfg BootstrapConfig) error {
-	volumePath := filepath.Join(cfg.Path, macOSVolumeFile)
+	// Validate configuration
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid bootstrap config: %w", err)
+	}
+
+	volumePath := filepath.Join(cfg.Path, constants.MacOSVolumeFile)
 
 	// Check if volume already exists
 	if m.Exists(volumePath) {
@@ -40,7 +40,7 @@ func (m *MacOSVolumeManager) Bootstrap(cfg BootstrapConfig) error {
 		"-encryption", "AES-256",
 		"-type", "SPARSE",
 		"-fs", "APFS",
-		"-volname", macOSVolumeName,
+		"-volname", constants.MacOSVolumeName,
 		"-stdinpass",
 		volumePath,
 	)
@@ -126,14 +126,14 @@ func (m *MacOSVolumeManager) Exists(volumePath string) bool {
 }
 
 func (m *MacOSVolumeManager) GetVolumePath(baseDir string) string {
-	return filepath.Join(baseDir, macOSVolumeFile)
+	return filepath.Join(baseDir, constants.MacOSVolumeFile)
 }
 
 // createDirectoryStructure creates the required directories inside the mounted volume.
 func (m *MacOSVolumeManager) createDirectoryStructure(mountPoint string) error {
 	for _, dir := range config.VolumeStructure {
 		path := filepath.Join(mountPoint, dir)
-		if err := os.MkdirAll(path, 0755); err != nil {
+		if err := os.MkdirAll(path, constants.DirPermissions); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
@@ -156,8 +156,8 @@ func (m *MacOSVolumeManager) parseMountPoint(output string) string {
 // findMountPoint checks if ClaudeEnv volume is currently mounted.
 func (m *MacOSVolumeManager) findMountPoint() string {
 	// Check standard mount point
-	if _, err := os.Stat(macOSMountPoint); err == nil {
-		return macOSMountPoint
+	if _, err := os.Stat(constants.MacOSMountPoint); err == nil {
+		return constants.MacOSMountPoint
 	}
 
 	// Check for numbered variants (e.g., /Volumes/ClaudeEnv 1)
@@ -167,7 +167,7 @@ func (m *MacOSVolumeManager) findMountPoint() string {
 	}
 
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), macOSVolumeName) {
+		if strings.HasPrefix(entry.Name(), constants.MacOSVolumeName) {
 			return filepath.Join("/Volumes", entry.Name())
 		}
 	}
