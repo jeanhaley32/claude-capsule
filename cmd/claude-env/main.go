@@ -12,7 +12,6 @@ import (
 	"github.com/jeanhaley32/portable-claude-env/internal/platform"
 	"github.com/jeanhaley32/portable-claude-env/internal/repo"
 	"github.com/jeanhaley32/portable-claude-env/internal/state"
-	"github.com/jeanhaley32/portable-claude-env/internal/symlink"
 	"github.com/jeanhaley32/portable-claude-env/internal/terminal"
 	"github.com/jeanhaley32/portable-claude-env/internal/volume"
 )
@@ -178,7 +177,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	dockerManager := docker.NewManager()
-	symlinkManager := symlink.NewManager()
 	repoIdentifier := repo.NewIdentifier()
 
 	// Find volume path
@@ -232,15 +230,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Volume mounted at %s\n", mountPoint)
 
-	// Create symlink
-	fmt.Println("Setting up shadow documentation...")
-	if err := symlinkManager.CreateSymlink(workspacePath, mountPoint, repoID); err != nil {
-		if unmountErr := volumeManager.Unmount(mountPoint); unmountErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to unmount volume: %v\n", unmountErr)
-		}
-		return fmt.Errorf("failed to create symlink: %w", err)
-	}
-
 	// Start container
 	fmt.Println("Starting container...")
 	containerConfig := docker.ContainerConfig{
@@ -251,16 +240,25 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := dockerManager.Start(containerConfig); err != nil {
-		if symlinkErr := symlinkManager.RemoveSymlink(workspacePath); symlinkErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to remove symlink: %v\n", symlinkErr)
-		}
 		if unmountErr := volumeManager.Unmount(mountPoint); unmountErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to unmount volume: %v\n", unmountErr)
 		}
 		return fmt.Errorf("failed to start container: %w", err)
 	}
-
 	fmt.Println("Container started!")
+
+	// Setup symlink inside container
+	fmt.Println("Setting up shadow documentation...")
+	if err := dockerManager.SetupWorkspaceSymlink(docker.DefaultContainerName, repoID); err != nil {
+		// Clean up on failure
+		if stopErr := dockerManager.Stop(docker.DefaultContainerName); stopErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to stop container: %v\n", stopErr)
+		}
+		if unmountErr := volumeManager.Unmount(mountPoint); unmountErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to unmount volume: %v\n", unmountErr)
+		}
+		return fmt.Errorf("failed to setup workspace symlink: %w", err)
+	}
 	fmt.Println("")
 	fmt.Println("Entering container... (type 'exit' to leave)")
 	fmt.Println("")
@@ -283,7 +281,6 @@ func newStopCmd() *cobra.Command {
 
 func runStop(cmd *cobra.Command, args []string) error {
 	dockerManager := docker.NewManager()
-	symlinkManager := symlink.NewManager()
 
 	// Get volume manager for unmount
 	volumeManager, err := volume.New()
@@ -291,24 +288,12 @@ func runStop(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: Could not create volume manager: %v\n", err)
 	}
 
-	// Stop container
+	// Stop container (symlink inside container is destroyed with it)
 	fmt.Println("Stopping container...")
 	if err := dockerManager.Stop(docker.DefaultContainerName); err != nil {
 		fmt.Printf("Warning: Failed to stop container: %v\n", err)
 	} else {
 		fmt.Println("Container stopped.")
-	}
-
-	// Clean up symlink in current directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Could not get current directory: %v\n", err)
-	} else if symlinkManager.SymlinkExists(cwd) {
-		if err := symlinkManager.RemoveSymlink(cwd); err != nil {
-			fmt.Printf("Warning: Failed to remove symlink: %v\n", err)
-		} else {
-			fmt.Println("Symlink removed.")
-		}
 	}
 
 	// Unmount volume

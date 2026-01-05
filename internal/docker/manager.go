@@ -148,6 +148,46 @@ func (m *Manager) ExecCommand(containerName string, command ...string) (string, 
 	return string(output), nil
 }
 
+// SetupWorkspaceSymlink creates the _docs symlink inside the container.
+// It waits for the container to be ready and then runs the setup script.
+func (m *Manager) SetupWorkspaceSymlink(containerName, repoID string) error {
+	if containerName == "" {
+		containerName = DefaultContainerName
+	}
+	if repoID == "" {
+		return fmt.Errorf("repoID is required")
+	}
+
+	// Wait for container to be running with retry
+	maxRetries := 10
+	retryDelay := 500 * time.Millisecond
+	for i := 0; i < maxRetries; i++ {
+		if m.IsRunning(containerName) {
+			break
+		}
+		if i == maxRetries-1 {
+			return fmt.Errorf("container %s not running after %d retries", containerName, maxRetries)
+		}
+		time.Sleep(retryDelay)
+	}
+
+	// Run the setup script inside the container
+	ctx, cancel := context.WithTimeout(context.Background(), defaultCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", "exec", containerName,
+		"setup-workspace-symlink.sh", repoID)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("symlink setup timed out after %v", defaultCommandTimeout)
+		}
+		return fmt.Errorf("failed to setup workspace symlink: %w\nOutput: %s", err, string(output))
+	}
+
+	return nil
+}
+
 // runCommandWithTimeout runs a command with a timeout.
 func (m *Manager) runCommandWithTimeout(timeout time.Duration, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
