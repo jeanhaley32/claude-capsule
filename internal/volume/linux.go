@@ -1,5 +1,10 @@
 package volume
 
+// Linux support is planned but not yet implemented.
+// The main.go entry points check for macOS and return early,
+// so these stubs should not be reached in normal use.
+// When implementing, use LUKS (cryptsetup) for encrypted volumes.
+
 import (
 	"fmt"
 	"os"

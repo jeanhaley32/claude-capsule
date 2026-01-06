@@ -251,7 +251,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "[pre-start] Removed stale container: %s\n", strings.TrimSpace(string(cleanupOutput)))
 		// Give Docker time to release mount references
 		fmt.Fprintf(os.Stderr, "[pre-start] Waiting for Docker to release mount references...\n")
-		time.Sleep(1 * time.Second)
+		time.Sleep(docker.MountReleaseDelay)
 	}
 
 	// Check if volume is already mounted (reuse existing mount for fast re-entry)
@@ -272,7 +272,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Refresh Docker's VirtioFS cache for the mount point
 	// This is necessary because Docker Desktop caches mount information
 	fmt.Println("Preparing Docker mount...")
-	_ = dockerManager.RefreshMountCache(mountPoint)
+	if err := dockerManager.RefreshMountCache(mountPoint); err != nil {
+		// Non-fatal: if refresh fails, the actual mount will report a clearer error
+		fmt.Fprintf(os.Stderr, "[warning] Cache refresh failed (will retry on mount): %v\n", err)
+	}
 
 	// Start container with retry on Docker mount cache errors
 	fmt.Println("Starting container...")
@@ -288,16 +291,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 		// Docker Desktop has stale mount cache - clean up and retry
 		fmt.Println("Docker mount cache conflict detected, cleaning up...")
 
-		// Remove any partial container
+		// Remove any partial container (errors ignored - container may not exist)
 		retryCleanupCmd := exec.Command("docker", "rm", "-f", docker.DefaultContainerName)
-		_ = retryCleanupCmd.Run()
+		if err := retryCleanupCmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "[cleanup] Container removal: %v\n", err)
+		}
 
 		// Unmount and remove mount directory (Unmount now handles directory cleanup)
-		_ = volumeManager.Unmount(mountPoint)
+		if err := volumeManager.Unmount(mountPoint); err != nil {
+			fmt.Fprintf(os.Stderr, "[cleanup] Volume unmount: %v\n", err)
+		}
 
 		// Wait for Docker Desktop to clear its cache
 		fmt.Println("Waiting for Docker to refresh...")
-		time.Sleep(2 * time.Second)
+		time.Sleep(docker.CacheRefreshDelay)
 
 		// Remount
 		fmt.Println("Remounting volume...")
@@ -318,7 +325,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 		// Clean up any partially created container before returning error
 		fmt.Fprintf(os.Stderr, "[error] Cleaning up failed container...\n")
 		failCleanupCmd := exec.Command("docker", "rm", "-f", docker.DefaultContainerName)
-		_ = failCleanupCmd.Run()
+		if err := failCleanupCmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "[cleanup] Container removal: %v\n", err)
+		}
 
 		if unmountErr := volumeManager.Unmount(mountPoint); unmountErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to unmount volume: %v\n", unmountErr)
@@ -544,7 +553,10 @@ func newBuildImageCmd() *cobra.Command {
 }
 
 func runBuildImage(cmd *cobra.Command, args []string) error {
-	force, _ := cmd.Flags().GetBool("force")
+	force, err := cmd.Flags().GetBool("force")
+	if err != nil {
+		return fmt.Errorf("invalid force flag: %w", err)
+	}
 
 	if !force && embedded.ImageExists(docker.DefaultImageName) {
 		fmt.Printf("Docker image '%s' already exists. Use --force to rebuild.\n", docker.DefaultImageName)

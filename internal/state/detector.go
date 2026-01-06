@@ -72,34 +72,26 @@ func (d *Detector) Detect() *EnvironmentState {
 }
 
 // checkVolumeMounted checks if the ClaudeEnv volume is mounted.
+// This mirrors the logic in volume/macos.go findMountPoint().
 func (d *Detector) checkVolumeMounted() (string, bool) {
-	// Check new mount point under home directory first (preferred for Docker compatibility)
-	if homeDir, err := os.UserHomeDir(); err == nil {
-		homeMountPoint := filepath.Join(homeDir, ".claude-env", "mount")
-		if info, err := os.Stat(homeMountPoint); err == nil && info.IsDir() {
-			// Verify it's actually a mount by checking for content
-			entries, err := os.ReadDir(homeMountPoint)
-			if err == nil && len(entries) > 0 {
-				return homeMountPoint, true
+	// Check for unique mount points in /tmp (current approach)
+	entries, err := os.ReadDir("/tmp")
+	if err == nil {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "claude-env-") && entry.IsDir() {
+				mountPoint := filepath.Join("/tmp", entry.Name())
+				// Verify it's actually mounted by checking for content
+				contents, err := os.ReadDir(mountPoint)
+				if err == nil && len(contents) > 0 {
+					return mountPoint, true
+				}
 			}
 		}
 	}
 
-	// Fall back to standard /Volumes mount point (legacy)
+	// Fall back to legacy /Volumes mount point
 	if _, err := os.Stat(constants.MacOSMountPoint); err == nil {
 		return constants.MacOSMountPoint, true
-	}
-
-	// Check for numbered variants (e.g., /Volumes/ClaudeEnv 1)
-	entries, err := os.ReadDir("/Volumes")
-	if err != nil {
-		return "", false
-	}
-
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), constants.MacOSVolumeName) {
-			return filepath.Join("/Volumes", entry.Name()), true
-		}
 	}
 
 	return "", false

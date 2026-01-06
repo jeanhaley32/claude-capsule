@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/jeanhaley32/portable-claude-env/internal/constants"
 )
 
 //go:embed Dockerfile
@@ -23,7 +25,7 @@ func BuildImage(imageName string) error {
 
 	// Write Dockerfile to temp directory
 	dockerfilePath := filepath.Join(tempDir, "Dockerfile")
-	if err := os.WriteFile(dockerfilePath, Dockerfile, 0644); err != nil {
+	if err := os.WriteFile(dockerfilePath, Dockerfile, constants.FilePermissions); err != nil {
 		return fmt.Errorf("failed to write Dockerfile: %w", err)
 	}
 
