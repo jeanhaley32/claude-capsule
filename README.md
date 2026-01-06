@@ -1,19 +1,39 @@
-# Portable Claude Code Environment
+# Portable Claude
 
-A containerized, security-focused development environment for Claude Code with encrypted credential storage. Keep your API keys, conversation history, and preferences secure in an encrypted volume that travels with you.
+A portable, sandboxed environment for Claude Code. Take your encrypted credentials between machines while keeping the AI isolated—it can only access the project you're working on, not your home directory, SSH keys, or other sensitive files.
 
-## Why?
+## Why Sandbox Your AI?
 
-When using Claude Code across multiple projects and machines, you face challenges:
-- **Credential management**: API keys scattered across machines
-- **Context loss**: Conversation history and preferences lost between sessions
-- **Security concerns**: Credentials stored in plaintext in home directories
+When you run Claude Code directly on your machine, it has access to:
 
-This project solves these by:
-- Storing all sensitive data in an **encrypted volume** (AES-256)
-- Running Claude Code in a **Docker container** with controlled access
-- Persisting your **home directory** in the encrypted volume (credentials survive restarts)
-- Creating **shadow documentation** (`_docs/`) for per-project notes that don't pollute your git repo
+```
+~/.ssh/           ← Your SSH keys (GitHub, servers, etc.)
+~/.aws/           ← AWS credentials
+~/.config/        ← Application secrets and tokens
+~/.gnupg/         ← GPG keys
+~/Projects/       ← ALL your other projects and repos
+~/.bash_history   ← Command history with passwords/secrets
+~/.netrc          ← Plaintext credentials
+...and everything else in your home directory
+```
+
+**This tool solves that** by running Claude Code inside a Docker container with strict mount boundaries:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  What Claude Code can see (sandboxed)               │
+├─────────────────────────────────────────────────────┤
+│  /workspace/     ← Only YOUR CURRENT project        │
+│  /claude-env/    ← Its own encrypted home directory │
+│                                                     │
+│  That's it. Nothing else.                           │
+└─────────────────────────────────────────────────────┘
+```
+
+**Additional benefits:**
+- **Encrypted credentials** - API keys and session data stored in AES-256 encrypted volume
+- **Portable** - Take your encrypted volume between macOS machines
+- **Per-project isolation** - Switch projects without credential leakage
 
 ## Prerequisites
 
@@ -158,58 +178,29 @@ The symlink is created inside the container and is automatically gitignored.
 
 ## Security Model
 
-| Aspect | Protection |
-|--------|------------|
-| Credentials at rest | AES-256 encrypted volume |
-| Credentials in memory | Accessible while volume is mounted |
-| API keys | Never stored in Docker image or git |
-| Volume password | Never stored, required to unlock |
-| Container isolation | Docker provides process isolation |
-
-**Important:** After `exit`, the volume remains mounted for fast re-entry. Run `claude-env lock` to unmount and fully secure your credentials.
-
-### What's Protected
-
-- Claude API credentials (`~/.claude/`)
-- Shell history (`~/.bash_history`)
-- Any config files in home directory
-- Shadow documentation
-
-### What's NOT Protected
-
-- Your project source code (mounted read-write)
-- Network traffic (not encrypted by this tool)
-- Runtime memory (standard Docker security applies)
-
-### AI Model Isolation
-
-A key security benefit of this project is **sandboxing the AI model** from your system. When Claude Code runs inside the container, it can only access:
-
-```
-/workspace/     ← Your current project (explicitly mounted)
-/claude-env/    ← Encrypted volume (home directory, credentials, docs)
-```
-
-**The AI model CANNOT access:**
-- Your host home directory (`~/`)
-- Other projects or repositories
-- System files and configurations
-- SSH keys, GPG keys, or other credentials outside the encrypted volume
-- Parent directories of your project
-- Any path not explicitly mounted
-
-This is a significant security improvement over running AI coding assistants directly on your host machine, where they typically have access to your entire home directory and potentially sensitive files.
-
-**Isolation layers:**
+### Isolation Layers
 
 | Layer | Protection |
 |-------|------------|
 | Docker container | Process isolation from host |
-| Explicit mounts only | Only two paths visible to AI |
+| Explicit mounts only | Only `/workspace` and `/claude-env` visible |
 | Non-root user | Container runs as unprivileged `claude` user |
-| No host networking | Container uses isolated network namespace |
+| No host networking | Isolated network namespace |
+| Encrypted volume | AES-256 encryption for credentials at rest |
 
-This design ensures that even if the AI attempts to access files outside its sandbox, the container boundary prevents it.
+### What's Protected
+
+- Your host system (SSH keys, other projects, system files)
+- Claude API credentials (encrypted at rest)
+- Shell history and config files (inside encrypted volume)
+
+### What's NOT Protected
+
+- Your current project source code (mounted read-write by design)
+- Network traffic (not encrypted by this tool)
+- Runtime memory (standard Docker security applies)
+
+**Important:** After `exit`, the volume remains mounted for fast re-entry. Run `claude-env lock` to unmount and fully secure your credentials.
 
 ## File Locations
 
@@ -248,12 +239,11 @@ claude-env build-image --force
 
 ### "operation not permitted" or "file exists" on start
 
-This can happen if Docker Desktop's cache is stale after a `lock`. Run `lock` again to restart Docker Desktop:
+This can happen if Docker's VirtioFS cache has stale entries. The `lock` command automatically clears the cache, so running it again should fix the issue:
 ```bash
 ./claude-env lock
+./claude-env start
 ```
-
-If the volume is already unmounted, restart Docker Desktop manually.
 
 ## Development
 
