@@ -124,10 +124,54 @@ This unmounts the encrypted volume, securing your credentials. The next `start` 
 | `bootstrap` | Create new encrypted volume |
 | `start` | Mount volume (if needed), start container, enter shell |
 | `stop` | Stop container (keeps volume mounted) |
+| `unlock` | Mount encrypted volume without starting container |
 | `lock` | Unmount volume and secure credentials |
 | `status` | Show current environment status |
 | `build-image` | Build Docker image (automatic on first start) |
 | `version` | Show version information |
+
+## Multi-Project Support
+
+Each project gets its own isolated container based on the git repository:
+
+```bash
+# Terminal 1
+cd ~/projects/frontend
+claude-env start    # Creates container: claude-a1b2c3d4
+
+# Terminal 2 (simultaneously)
+cd ~/projects/backend
+claude-env start    # Creates container: claude-e5f6g7h8
+```
+
+Both containers share the same encrypted volume for credentials but run independently.
+
+## Scripting & Automation
+
+For CI/CD or scripted workflows, you can provide the password non-interactively:
+
+```bash
+# Via environment variable
+export CLAUDE_ENV_PASSWORD="your-password"
+claude-env start
+
+# Via stdin (useful for secret managers)
+echo "your-password" | claude-env start --password-stdin
+vault read -field=password secret/claude | claude-env unlock --password-stdin
+```
+
+The `unlock` and `lock` commands output parsable KEY=VALUE format to stdout:
+
+```bash
+$ claude-env unlock --password-stdin <<< "$CLAUDE_ENV_PASSWORD"
+MOUNT_POINT=/tmp/claude-env-abc123
+STATUS=mounted
+VOLUME_PATH=/path/to/claude-env.sparseimage
+
+$ claude-env lock
+STATUS=locked
+VOLUME_PATH=/path/to/claude-env.sparseimage
+```
 
 ## How It Works
 
