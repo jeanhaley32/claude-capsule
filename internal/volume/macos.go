@@ -80,6 +80,21 @@ func (m *MacOSVolumeManager) Bootstrap(cfg BootstrapConfig) error {
 		return fmt.Errorf("failed to create directory structure: %w", err)
 	}
 
+	// Verify the directory structure was created by reading it back
+	fmt.Fprintf(os.Stderr, "[bootstrap] Verifying directory structure...\n")
+	homeClaudeDir := filepath.Join(mountPoint, "home", ".claude")
+	if entries, err := os.ReadDir(homeClaudeDir); err != nil {
+		_ = m.Unmount(mountPoint)
+		return fmt.Errorf("verification failed - cannot read home/.claude: %w", err)
+	} else {
+		fmt.Fprintf(os.Stderr, "[bootstrap] Verified home/.claude exists with %d entries\n", len(entries))
+	}
+
+	// Sync filesystem before unmount to ensure data is persisted
+	fmt.Fprintf(os.Stderr, "[bootstrap] Syncing filesystem...\n")
+	syncCmd := exec.Command("sync")
+	_ = syncCmd.Run()
+
 	// Unmount the volume
 	if err := m.Unmount(mountPoint); err != nil {
 		return fmt.Errorf("failed to unmount volume after setup: %w", err)
@@ -89,8 +104,11 @@ func (m *MacOSVolumeManager) Bootstrap(cfg BootstrapConfig) error {
 }
 
 func (m *MacOSVolumeManager) Mount(volumePath, password string) (string, error) {
+	fmt.Fprintf(os.Stderr, "[mount] Attempting to mount: %s\n", volumePath)
+
 	// Check if already mounted
 	if mountPoint := m.findMountPoint(); mountPoint != "" {
+		fmt.Fprintf(os.Stderr, "[mount] Found existing mount at: %s\n", mountPoint)
 		return mountPoint, nil
 	}
 
@@ -125,6 +143,17 @@ func (m *MacOSVolumeManager) Mount(volumePath, password string) (string, error) 
 			return "", fmt.Errorf("failed to mount volume: %s", string(exitErr.Stderr))
 		}
 		return "", fmt.Errorf("failed to mount volume: %w: %s", err, string(output))
+	}
+
+	fmt.Fprintf(os.Stderr, "[mount] Successfully mounted at: %s\n", mountPoint)
+
+	// Debug: list contents of mounted volume
+	if entries, err := os.ReadDir(mountPoint); err == nil {
+		fmt.Fprintf(os.Stderr, "[mount] Volume contents: ")
+		for _, e := range entries {
+			fmt.Fprintf(os.Stderr, "%s ", e.Name())
+		}
+		fmt.Fprintf(os.Stderr, "\n")
 	}
 
 	return mountPoint, nil
