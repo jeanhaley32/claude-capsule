@@ -18,31 +18,12 @@ const (
 
 	// LinuxMountPoint is the default mount point for the encrypted volume on Linux.
 	LinuxMountPoint = "/tmp/claude-env-mount"
-
-	// LinuxMapperName is the device mapper name used for LUKS volumes.
-	LinuxMapperName = "claude-env"
-)
-
-// Docker-related constants
-const (
-	// DefaultImageName is the default Docker image name.
-	DefaultImageName = "portable-claude:latest"
-
-	// DefaultContainerName is the default Docker container name.
-	DefaultContainerName = "portable-claude"
 )
 
 // Shadow documentation constants
 const (
 	// DocsSymlinkName is the name of the shadow documentation directory.
 	DocsSymlinkName = "_docs"
-)
-
-// Security-related constants
-const (
-	// MinPasswordLength is the minimum required password length.
-	// NIST SP 800-63B recommends minimum 8, but 12+ is better for encryption keys.
-	MinPasswordLength = 12
 )
 
 // Volume size limits

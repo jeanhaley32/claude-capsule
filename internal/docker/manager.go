@@ -7,15 +7,26 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/jeanhaley32/portable-claude-env/internal/constants"
 )
 
-// Default timeout for Docker commands
-const defaultCommandTimeout = 30 * time.Second
+// Timeout configuration for Docker commands
+const (
+	defaultCommandTimeout = 30 * time.Second
+	quickCommandTimeout   = 10 * time.Second // For fast operations like cache refresh
+)
 
 // Retry configuration for container readiness
 const (
 	containerReadyMaxRetries = 10
 	containerReadyRetryDelay = 500 * time.Millisecond
+)
+
+// Delay constants for Docker operations
+const (
+	MountReleaseDelay = 1 * time.Second // Wait for Docker to release mount references
+	CacheRefreshDelay = 2 * time.Second // Wait for Docker VirtioFS cache to refresh
 )
 
 const (
@@ -161,22 +172,6 @@ func (m *Manager) Exec(containerName string) error {
 	return cmd.Run()
 }
 
-// ExecCommand runs a command in the container and returns the output.
-func (m *Manager) ExecCommand(containerName string, command ...string) (string, error) {
-	if containerName == "" {
-		containerName = DefaultContainerName
-	}
-
-	args := append([]string{"exec", containerName}, command...)
-	cmd := exec.Command("docker", args...)
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to exec command in container: %w", err)
-	}
-
-	return string(output), nil
-}
-
 // SetupWorkspaceSymlink creates the _docs symlink inside the container.
 // It waits for the container to be ready and then runs the setup script.
 func (m *Manager) SetupWorkspaceSymlink(containerName, repoID string) error {
@@ -258,19 +253,19 @@ func (m *Manager) checkDockerRunning() error {
 func (m *Manager) CheckTmpFileSharing() error {
 	// Create a test directory with unique name
 	testDir := fmt.Sprintf("/tmp/claude-env-docker-check-%d", time.Now().UnixNano())
-	if err := os.MkdirAll(testDir, 0755); err != nil {
+	if err := os.MkdirAll(testDir, constants.DirPermissions); err != nil {
 		return fmt.Errorf("failed to create test directory: %w", err)
 	}
 	defer os.RemoveAll(testDir)
 
 	// Write a test file
 	testFile := testDir + "/test.txt"
-	if err := os.WriteFile(testFile, []byte("docker-check"), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte("docker-check"), constants.FilePermissions); err != nil {
 		return fmt.Errorf("failed to create test file: %w", err)
 	}
 
 	// Try to mount and read from Docker
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), quickCommandTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
@@ -302,7 +297,7 @@ Error: %s`, strings.TrimSpace(string(output)))
 // and encrypted volumes that appear/disappear can cause stale cache entries.
 // By running a container that mounts the specific path, we force VirtioFS to re-scan.
 func (m *Manager) RefreshMountCache(mountPoint string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), quickCommandTimeout)
 	defer cancel()
 
 	// Mount the actual path we'll be using - this forces VirtioFS to refresh its view
