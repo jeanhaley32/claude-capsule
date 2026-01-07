@@ -3,22 +3,25 @@ FROM node:20-slim
 LABEL maintainer="jeanhaley32"
 LABEL description="Portable Claude Code development environment"
 
-# Install system dependencies
+# Install system dependencies including zsh and sudo
 RUN apt-get update && apt-get install -y \
     git \
     curl \
     gh \
     jq \
     ripgrep \
+    zsh \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Create non-root user
-RUN useradd -m -s /bin/bash claude && \
+# Create non-root user with sudo access
+RUN useradd -m -s /bin/zsh claude && \
     mkdir -p /claude-env /workspace && \
-    chown -R claude:claude /claude-env /workspace
+    chown -R claude:claude /claude-env /workspace && \
+    echo "claude ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/claude
 
 # Set up volume mount points
 VOLUME ["/claude-env", "/workspace"]
@@ -53,9 +56,14 @@ RUN chmod +x /usr/local/bin/setup-workspace-symlink.sh
 USER claude
 WORKDIR /workspace
 
+# Install Oh My Zsh
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended && \
+    sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="agnoster"/' ~/.zshrc
+
 # Environment variables
 ENV CLAUDE_ENV_PATH=/claude-env
 ENV ANTHROPIC_API_KEY_FILE=/claude-env/auth/api-key
+ENV SHELL=/bin/zsh
 
 # Entry point
-ENTRYPOINT ["/bin/bash"]
+ENTRYPOINT ["/bin/zsh"]
