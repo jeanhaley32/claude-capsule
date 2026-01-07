@@ -48,11 +48,10 @@ When you run Claude Code directly on your machine, it has access to:
 ```bash
 git clone https://github.com/jeanhaley32/portable-claude-env.git
 cd portable-claude-env
-go build -o claude-env ./cmd/claude-env
-
-# Optional: Install to PATH for system-wide access
-sudo mv claude-env /usr/local/bin/
+make install
 ```
+
+This builds the binary and installs it to `~/.local/bin/claude-env`. Make sure `~/.local/bin` is in your PATH.
 
 The Docker image is embedded in the binary and will be built automatically on first use.
 
@@ -292,17 +291,12 @@ This can happen if Docker's VirtioFS cache has stale entries. The `lock` command
 ## Development
 
 ```bash
-# Run tests
-go test ./...
-
-# Build
-go build -o claude-env ./cmd/claude-env
-
-# Rebuild Docker image (updates embedded Dockerfile too)
-cp Dockerfile internal/embedded/Dockerfile
-go build -o claude-env ./cmd/claude-env
-claude-env build-image --force
-
+make build      # Build the binary
+make install    # Build and install to ~/.local/bin
+make test       # Run tests
+make docker     # Sync Dockerfile and rebuild Docker image
+make clean      # Remove build artifacts
+make uninstall  # Remove from ~/.local/bin
 ```
 
 ### Extending Claude Context
