@@ -163,7 +163,6 @@ func (m *MacOSVolumeManager) Unmount(mountPoint string) error {
 		if strings.HasPrefix(mountPoint, mountPointPrefix) {
 			os.Remove(mountPoint)
 		}
-		m.clearVMCache()
 		return nil
 	}
 
@@ -192,23 +191,7 @@ func (m *MacOSVolumeManager) Unmount(mountPoint string) error {
 		os.Remove(mountPoint)
 	}
 
-	// Clear the Linux VM's kernel cache to release VirtioFS file handles
-	// This may prevent "operation not permitted" errors on subsequent mounts
-	m.clearVMCache()
-
 	return nil
-}
-
-// clearVMCache clears the Linux VM's kernel cache to release VirtioFS file handles.
-// This drops dentries and inodes which may hold references to unmounted paths.
-func (m *MacOSVolumeManager) clearVMCache() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// echo 3 drops page cache, dentries, and inodes
-	cmd := exec.CommandContext(ctx, "docker", "run", "--privileged", "--rm",
-		"alpine", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches")
-	_ = cmd.Run() // Ignore errors - this is best-effort cache clear
 }
 
 func (m *MacOSVolumeManager) Exists(volumePath string) bool {

@@ -625,7 +625,7 @@ func runLock(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Unmount the specific volume (this also clears VM cache via drop_caches)
+	// Unmount the specific volume
 	fmt.Fprintf(os.Stderr, "Unmounting encrypted volume at %s...\n", mountPoint)
 	if err := volumeManager.Unmount(mountPoint); err != nil {
 		return fmt.Errorf("failed to unmount volume: %w", err)
