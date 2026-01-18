@@ -47,10 +47,10 @@ func (d *DefaultIdentifier) GetRepoID(workspacePath string) (string, error) {
 	return normalizeRemoteURL(strings.TrimSpace(string(output))), nil
 }
 
-// GetShortID returns a short unique identifier for the workspace.
+// getShortID returns a short unique identifier for the workspace.
 // This is a hash-based ID suitable for container names and mount paths.
 // Format: 8 character hex string (e.g., "a1b2c3d4")
-func (d *DefaultIdentifier) GetShortID(workspacePath string) (string, error) {
+func (d *DefaultIdentifier) getShortID(workspacePath string) (string, error) {
 	repoID, err := d.GetRepoID(workspacePath)
 	if err != nil {
 		return "", err
@@ -64,7 +64,7 @@ func (d *DefaultIdentifier) GetShortID(workspacePath string) (string, error) {
 // GetContainerName returns the container name for the workspace.
 // Format: "claude-<shortID>" (e.g., "claude-a1b2c3d4")
 func (d *DefaultIdentifier) GetContainerName(workspacePath string) (string, error) {
-	shortID, err := d.GetShortID(workspacePath)
+	shortID, err := d.getShortID(workspacePath)
 	if err != nil {
 		return "", err
 	}

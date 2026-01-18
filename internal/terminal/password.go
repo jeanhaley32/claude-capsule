@@ -58,22 +58,6 @@ func IsTerminal() bool {
 	return term.IsTerminal(int(syscall.Stdin))
 }
 
-// ReadPassword prompts for a password without echoing input.
-func ReadPassword(prompt string) (string, error) {
-	if !IsTerminal() {
-		return "", fmt.Errorf("cannot read password: not a terminal")
-	}
-
-	fmt.Print(prompt)
-	password, err := term.ReadPassword(int(syscall.Stdin))
-	fmt.Println() // newline after password entry
-	if err != nil {
-		return "", fmt.Errorf("failed to read password: %w", err)
-	}
-
-	return string(password), nil
-}
-
 // ReadPasswordSecure prompts for a password and returns a SecurePassword
 // that can be cleared from memory when no longer needed.
 func ReadPasswordSecure(prompt string) (*SecurePassword, error) {
@@ -89,17 +73,6 @@ func ReadPasswordSecure(prompt string) (*SecurePassword, error) {
 	}
 
 	return &SecurePassword{data: password}, nil
-}
-
-// ReadPasswordConfirm prompts for a password twice and verifies they match.
-// Deprecated: Use ReadPasswordConfirmSecure for better memory safety.
-func ReadPasswordConfirm(prompt, confirmPrompt string) (string, error) {
-	password, err := ReadPasswordConfirmSecure(prompt, confirmPrompt)
-	if err != nil {
-		return "", err
-	}
-	// Note: caller should clear password when done
-	return password.String(), nil
 }
 
 // ReadPasswordConfirmSecure prompts for a password twice, verifies they match,
@@ -126,17 +99,6 @@ func ReadPasswordConfirmSecure(prompt, confirmPrompt string) (*SecurePassword, e
 	return password, nil
 }
 
-// ReadPasswordFromStdin reads a password from stdin (for piped input).
-// Use this when --password-stdin flag is provided.
-// Deprecated: Use ReadPasswordFromStdinSecure for better memory safety.
-func ReadPasswordFromStdin() (string, error) {
-	password, err := ReadPasswordFromStdinSecure()
-	if err != nil {
-		return "", err
-	}
-	return password.String(), nil
-}
-
 // ReadPasswordFromStdinSecure reads a password from stdin and returns a SecurePassword.
 func ReadPasswordFromStdinSecure() (*SecurePassword, error) {
 	reader := bufio.NewReader(os.Stdin)
@@ -146,13 +108,6 @@ func ReadPasswordFromStdinSecure() (*SecurePassword, error) {
 	}
 	trimmed := strings.TrimSuffix(password, "\n")
 	return &SecurePassword{data: []byte(trimmed)}, nil
-}
-
-// ReadPasswordFromEnv reads the password from CAPSULE_PASSWORD environment variable.
-// Returns empty string if not set.
-// Deprecated: Use ReadPasswordFromEnvSecure for better memory safety.
-func ReadPasswordFromEnv() string {
-	return os.Getenv(PasswordEnvVar)
 }
 
 // ReadPasswordFromEnvSecure reads the password from CAPSULE_PASSWORD and returns a SecurePassword.
@@ -165,21 +120,12 @@ func ReadPasswordFromEnvSecure() *SecurePassword {
 	return &SecurePassword{data: []byte(env)}
 }
 
-// ReadPasswordMultiSource attempts to read password from multiple sources in order:
+// ReadPasswordMultiSourceSecure attempts to read password from multiple sources.
+// The caller must call Clear() on the returned password when done.
+// Sources checked in order:
 // 1. If useStdin is true, read from stdin (for piped input)
 // 2. Check CAPSULE_PASSWORD environment variable
 // 3. Fall back to interactive terminal prompt
-// Deprecated: Use ReadPasswordMultiSourceSecure for better memory safety.
-func ReadPasswordMultiSource(useStdin bool, prompt string) (string, error) {
-	password, err := ReadPasswordMultiSourceSecure(useStdin, prompt)
-	if err != nil {
-		return "", err
-	}
-	return password.String(), nil
-}
-
-// ReadPasswordMultiSourceSecure attempts to read password from multiple sources.
-// The caller must call Clear() on the returned password when done.
 func ReadPasswordMultiSourceSecure(useStdin bool, prompt string) (*SecurePassword, error) {
 	// Option 1: Read from stdin if flag is set
 	if useStdin {

@@ -11,4 +11,7 @@ type Identifier interface {
 	// For git repos, this is the git root.
 	// For non-git directories, this is the provided path.
 	GetWorkspaceRoot(path string) (string, error)
+
+	// GetContainerName returns a Docker-safe container name for the workspace.
+	GetContainerName(workspacePath string) (string, error)
 }

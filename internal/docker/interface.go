@@ -87,4 +87,19 @@ type DockerManager interface {
 
 	// IsRunning checks if a container with the given name is running.
 	IsRunning(containerName string) bool
+
+	// Exec runs an interactive shell in the container and waits for it to exit.
+	Exec(containerName string) error
+
+	// SetupWorkspaceSymlink creates the _docs symlink inside the container.
+	SetupWorkspaceSymlink(containerName, repoID string) error
+
+	// RemoveContainer forcibly removes a container (running or stopped).
+	RemoveContainer(containerName string) error
+
+	// CheckTmpFileSharing verifies Docker Desktop can access /tmp for volume mounts.
+	CheckTmpFileSharing() error
+
+	// RefreshMountCache forces Docker Desktop to refresh its VirtioFS cache for a mount point.
+	RefreshMountCache(mountPoint string) error
 }
