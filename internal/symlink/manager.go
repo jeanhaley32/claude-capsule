@@ -54,25 +54,6 @@ func (m *Manager) CreateSymlink(workspacePath, volumeMountPoint, repoID string) 
 	return nil
 }
 
-func (m *Manager) RemoveSymlink(workspacePath string) error {
-	symlinkPath := filepath.Join(workspacePath, constants.DocsSymlinkName)
-
-	// Only remove if it's a symlink, not a real directory
-	info, err := os.Lstat(symlinkPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("failed to check symlink %s: %w", symlinkPath, err)
-	}
-
-	if info.Mode()&os.ModeSymlink != 0 {
-		return os.Remove(symlinkPath)
-	}
-
-	return fmt.Errorf("%s exists but is not a symlink", symlinkPath)
-}
-
 func (m *Manager) SymlinkExists(workspacePath string) bool {
 	symlinkPath := filepath.Join(workspacePath, constants.DocsSymlinkName)
 	info, err := os.Lstat(symlinkPath)
@@ -82,25 +63,3 @@ func (m *Manager) SymlinkExists(workspacePath string) bool {
 	return info.Mode()&os.ModeSymlink != 0
 }
 
-func (m *Manager) CleanupBroken(workspacePath string) error {
-	symlinkPath := filepath.Join(workspacePath, constants.DocsSymlinkName)
-
-	// Check if symlink exists
-	info, err := os.Lstat(symlinkPath)
-	if err != nil {
-		return nil // Doesn't exist, nothing to clean
-	}
-
-	if info.Mode()&os.ModeSymlink == 0 {
-		return nil // Not a symlink
-	}
-
-	// Check if target exists
-	_, err = os.Stat(symlinkPath)
-	if os.IsNotExist(err) {
-		// Broken symlink, remove it
-		return os.Remove(symlinkPath)
-	}
-
-	return nil
-}

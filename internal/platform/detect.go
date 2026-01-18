@@ -20,13 +20,3 @@ func Detect() OS {
 	}
 }
 
-// IsMacOS returns true if running on macOS.
-func IsMacOS() bool {
-	return Detect() == MacOS
-}
-
-// IsSupported returns true if the current OS is supported.
-// Currently only macOS is supported.
-func IsSupported() bool {
-	return Detect() == MacOS
-}

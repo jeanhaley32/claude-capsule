@@ -8,7 +8,9 @@ _docs/
 
 # Go build artifacts
 /claude-env
+/capsule
 *.exe
+*.old
 
 # IDE
 .idea/

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeanhaley32/claude-capsule/internal/constants"
+	"github.com/jeanhaley32/claude-capsule/internal/embedded"
 )
 
 // Timeout configuration for Docker commands
@@ -54,7 +55,7 @@ func (m *Manager) Start(config ContainerConfig) error {
 	}
 
 	// Check if image exists
-	if !m.imageExists(config.ImageName) {
+	if !embedded.ImageExists(config.ImageName) {
 		return fmt.Errorf("docker image '%s' not found. Build it with: docker build -t %s .",
 			config.ImageName, config.ImageName)
 	}
@@ -311,11 +312,6 @@ func (m *Manager) RefreshMountCache(mountPoint string) error {
 	}
 
 	return nil
-}
-
-// imageExists checks if a Docker image exists locally.
-func (m *Manager) imageExists(imageName string) bool {
-	return m.runCommandWithTimeout(defaultCommandTimeout, "docker", "image", "inspect", imageName) == nil
 }
 
 // containerExists checks if a container exists (running or stopped).

@@ -404,11 +404,6 @@ func (m *MacOSVolumeManager) findMountPointForVolume(volumePath string) string {
 	return ""
 }
 
-// IsMounted returns true if the specified volume is currently mounted.
-func (m *MacOSVolumeManager) IsMounted(volumePath string) bool {
-	return m.findMountPointForVolume(volumePath) != ""
-}
-
 // GetMountPoint returns the mount point for the specified volume if mounted, empty string otherwise.
 func (m *MacOSVolumeManager) GetMountPoint(volumePath string) string {
 	return m.findMountPointForVolume(volumePath)
