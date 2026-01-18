@@ -32,8 +32,8 @@ When you run Claude Code directly on your machine, it has access to:
 
 **Additional benefits:**
 - **Encrypted credentials** - API keys and session data stored in AES-256 encrypted volume
-- **Portable** - Take your encrypted volume between macOS machines
-- **Per-project isolation** - Switch projects without credential leakage
+- **Portable conversations** - Your Claude conversation history persists in the encrypted volume, so you can continue long-running sessions across machines
+- **Per-project isolation** - Switch projects without credential leakage, while Claude only sees your current workspace
 
 ## Prerequisites
 
@@ -209,6 +209,13 @@ The volume mounts to a unique path in `/tmp` for Docker compatibility.
 │  Claude Code CLI installed              │
 └─────────────────────────────────────────┘
 ```
+
+Because `$HOME` points to the encrypted volume, all Claude Code state persists there:
+- **Credentials** - API keys and authentication tokens
+- **Conversation history** - Continue sessions across restarts and machines
+- **Settings** - Your Claude Code preferences and configuration
+
+Copy your `capsule.sparseimage` to another Mac, unlock it, and pick up exactly where you left off.
 
 ### Container Environment
 
