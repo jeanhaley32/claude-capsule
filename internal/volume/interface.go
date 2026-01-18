@@ -9,7 +9,7 @@ import (
 
 // BootstrapConfig holds configuration for creating a new encrypted volume.
 type BootstrapConfig struct {
-	Path         string
+	VolumePath   string // Full path to the volume file (not just directory)
 	SizeGB       int
 	Password     *terminal.SecurePassword
 	ContextFiles []string // Markdown files to extend Claude context
@@ -17,7 +17,7 @@ type BootstrapConfig struct {
 
 // Validate checks that the bootstrap configuration is valid.
 func (c *BootstrapConfig) Validate() error {
-	if c.Path == "" {
+	if c.VolumePath == "" {
 		return fmt.Errorf("volume path is required")
 	}
 	if c.SizeGB < constants.MinVolumeSizeGB || c.SizeGB > constants.MaxVolumeSizeGB {
