@@ -1,6 +1,6 @@
 # Claude Capsule
 
-A portable, sandboxed workspace for Claude Code. Take your encrypted credentials between machines while keeping the AI isolated—it can only access the project you're working on, not your home directory, SSH keys, or other sensitive files.
+A sandboxed workspace for Claude Code. Run your AI assistant in an isolated Docker container—it can only access your current project, not your home directory, SSH keys, or other credentials. Your conversations and settings persist in an encrypted volume you can carry between machines.
 
 ## Why Sandbox Your AI?
 
