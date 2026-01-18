@@ -2,7 +2,7 @@ package volume
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -17,8 +17,8 @@ import (
 	"github.com/jeanhaley32/claude-capsule/internal/terminal"
 )
 
-// mountPointPrefix is the prefix for unique mount points in /tmp
-const mountPointPrefix = "/tmp/capsule-"
+// mountPointPrefix is the prefix for mount points in /Volumes (standard macOS location)
+const mountPointPrefix = "/Volumes/Capsule-"
 
 // Timeout for volume operations (hdiutil can be slow for large volumes)
 const volumeOperationTimeout = 5 * time.Minute
@@ -95,19 +95,12 @@ func (m *MacOSVolumeManager) Mount(volumePath string, password *terminal.SecureP
 		return mountPoint, nil
 	}
 
-	// Generate a unique mount point in /tmp to avoid Docker Desktop VirtioFS caching issues
-	// Each session gets a fresh path that Docker has never seen before
-	mountPoint, err := m.generateUniqueMountPoint()
-	if err != nil {
-		return "", fmt.Errorf("failed to generate mount point: %w", err)
-	}
+	// Generate a deterministic mount point in /Volumes based on the volume path
+	// Using /Volumes is the standard macOS location and works reliably with Docker Desktop
+	mountPoint := m.generateMountPoint(volumePath)
 
-	// Create the mount point directory
-	if err := os.MkdirAll(mountPoint, constants.DirPermissions); err != nil {
-		return "", fmt.Errorf("failed to create mount point directory: %w", err)
-	}
-
-	// Mount with password via stdin to the unique mount point
+	// Mount with password via stdin
+	// hdiutil will create the mount point in /Volumes (it has system entitlements to do so)
 	ctx, cancel := context.WithTimeout(context.Background(), volumeOperationTimeout)
 	defer cancel()
 
@@ -116,9 +109,6 @@ func (m *MacOSVolumeManager) Mount(volumePath string, password *terminal.SecureP
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// Clean up the directory we created
-		os.Remove(mountPoint)
-
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("volume mount timed out after %v", volumeOperationTimeout)
 		}
@@ -131,14 +121,14 @@ func (m *MacOSVolumeManager) Mount(volumePath string, password *terminal.SecureP
 	return mountPoint, nil
 }
 
-// generateUniqueMountPoint creates a unique path in /tmp for mounting
-func (m *MacOSVolumeManager) generateUniqueMountPoint() (string, error) {
-	// Generate 8 random bytes for a 16-character hex string
-	bytes := make([]byte, 8)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("failed to generate random bytes: %w", err)
-	}
-	return mountPointPrefix + hex.EncodeToString(bytes), nil
+// generateMountPoint creates a deterministic mount point path based on the volume file path.
+// This ensures the same volume always mounts to the same location, which works better
+// with Docker Desktop's VirtioFS caching.
+func (m *MacOSVolumeManager) generateMountPoint(volumePath string) string {
+	// Hash the volume path to get a deterministic, short identifier
+	hash := sha256.Sum256([]byte(volumePath))
+	shortHash := hex.EncodeToString(hash[:])[:12]
+	return mountPointPrefix + shortHash
 }
 
 func (m *MacOSVolumeManager) Unmount(mountPoint string) error {
@@ -232,15 +222,15 @@ func (m *MacOSVolumeManager) createDirectoryStructure(mountPoint string, context
 // findAnyMountedVolume finds the mount point for any mounted capsule volume.
 // This is a fallback for cases where we don't know the specific volume path.
 func (m *MacOSVolumeManager) findAnyMountedVolume() string {
-	// Check for our unique mount points in /tmp
-	entries, err := os.ReadDir("/tmp")
+	// Check for our mount points in /Volumes
+	entries, err := os.ReadDir("/Volumes")
 	if err != nil {
 		return ""
 	}
 
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "capsule-") && entry.IsDir() {
-			mountPoint := filepath.Join("/tmp", entry.Name())
+		if strings.HasPrefix(entry.Name(), "Capsule-") && entry.IsDir() {
+			mountPoint := filepath.Join("/Volumes", entry.Name())
 			// Verify it's actually mounted by checking for content
 			contents, err := os.ReadDir(mountPoint)
 			if err == nil && len(contents) > 0 {
@@ -297,13 +287,12 @@ func (m *MacOSVolumeManager) findMountPointForVolume(volumePath string) string {
 			}
 		}
 
-		// If we found our image, look for mount point
-		// Note: hdiutil returns /private/tmp on macOS (since /tmp -> /private/tmp)
-		if foundOurImage && (strings.Contains(line, "/tmp/capsule-") || strings.Contains(line, "/private/tmp/capsule-")) {
-			// Line format: "/dev/diskXsY	Apple_APFS	/private/tmp/capsule-xxx"
+		// If we found our image, look for mount point in /Volumes
+		if foundOurImage && strings.Contains(line, "/Volumes/Capsule-") {
+			// Line format: "/dev/diskXsY	Apple_APFS	/Volumes/Capsule-xxx"
 			fields := strings.Fields(line)
 			for _, field := range fields {
-				if strings.HasPrefix(field, "/tmp/capsule-") || strings.HasPrefix(field, "/private/tmp/capsule-") {
+				if strings.HasPrefix(field, "/Volumes/Capsule-") {
 					return field
 				}
 			}

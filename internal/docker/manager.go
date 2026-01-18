@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeanhaley32/claude-capsule/internal/constants"
 	"github.com/jeanhaley32/claude-capsule/internal/embedded"
 )
 
@@ -245,47 +244,34 @@ func (m *Manager) checkDockerRunning() error {
 	return nil
 }
 
-// CheckTmpFileSharing verifies Docker Desktop can access /tmp for volume mounts.
-// This is required because we mount encrypted volumes to unique paths in /tmp.
+// CheckTmpFileSharing verifies Docker Desktop is running and can access file mounts.
+// We mount encrypted volumes to /Volumes via hdiutil, which has system entitlements.
 func (m *Manager) CheckTmpFileSharing() error {
-	// Create a test directory with unique name
-	testDir := fmt.Sprintf("/tmp/capsule-docker-check-%d", time.Now().UnixNano())
-	if err := os.MkdirAll(testDir, constants.DirPermissions); err != nil {
-		return fmt.Errorf("failed to create test directory: %w", err)
-	}
-	defer os.RemoveAll(testDir)
-
-	// Write a test file
-	testFile := testDir + "/test.txt"
-	if err := os.WriteFile(testFile, []byte("docker-check"), constants.FilePermissions); err != nil {
-		return fmt.Errorf("failed to create test file: %w", err)
-	}
-
-	// Try to mount and read from Docker
+	// Just verify Docker is running and can do basic file mounts
+	// We can't test /Volumes directly (protected by macOS), but hdiutil can mount there
+	// Test with /tmp to verify Docker's file sharing is working in general
 	ctx, cancel := context.WithTimeout(context.Background(), quickCommandTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
-		"-v", testDir+":/test:ro",
-		"alpine", "cat", "/test/test.txt")
+		"-v", "/tmp:/test:ro",
+		"alpine", "ls", "/test")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf(`Docker cannot access /tmp for file sharing.
+		return fmt.Errorf(`Docker cannot access host filesystem for file sharing.
 
-Please configure Docker Desktop:
+Please ensure Docker Desktop is running and file sharing is enabled:
   1. Open Docker Desktop
   2. Go to Settings (gear icon) → Resources → File sharing
-  3. Add /tmp (or /private/tmp) to the list
-  4. Click "Apply & Restart"
+  3. Verify file sharing is enabled
+  4. Click "Apply & Restart" if you make changes
 
 Error: %s`, strings.TrimSpace(string(output)))
 	}
 
-	if strings.TrimSpace(string(output)) != "docker-check" {
-		return fmt.Errorf("Docker file sharing test returned unexpected output: %s", output)
-	}
-
+	// If we got output, the mount worked
+	_ = output
 	return nil
 }
 
@@ -311,6 +297,24 @@ func (m *Manager) RefreshMountCache(mountPoint string) error {
 		return nil
 	}
 
+	return nil
+}
+
+// ClearVMCache drops the Linux VM's kernel cache to release VirtioFS file handles.
+// This clears page cache, dentries, and inodes which may hold stale references
+// to mount points that have been unmounted and remounted.
+func (m *Manager) ClearVMCache() error {
+	ctx, cancel := context.WithTimeout(context.Background(), quickCommandTimeout)
+	defer cancel()
+
+	// echo 3 drops page cache, dentries, and inodes
+	cmd := exec.CommandContext(ctx, "docker", "run", "--privileged", "--rm",
+		"alpine", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to clear VM cache: %w: %s", err, strings.TrimSpace(string(output)))
+	}
 	return nil
 }
 

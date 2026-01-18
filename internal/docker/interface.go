@@ -97,9 +97,12 @@ type DockerManager interface {
 	// RemoveContainer forcibly removes a container (running or stopped).
 	RemoveContainer(containerName string) error
 
-	// CheckTmpFileSharing verifies Docker Desktop can access /tmp for volume mounts.
+	// CheckTmpFileSharing verifies Docker Desktop is running and can access file mounts.
 	CheckTmpFileSharing() error
 
 	// RefreshMountCache forces Docker Desktop to refresh its VirtioFS cache for a mount point.
 	RefreshMountCache(mountPoint string) error
+
+	// ClearVMCache drops the Linux VM's kernel cache to fix VirtioFS stale mount issues.
+	ClearVMCache() error
 }

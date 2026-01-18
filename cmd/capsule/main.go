@@ -363,9 +363,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cancelShutdown := setupShutdownHandler(createShutdownCleanup(volumePath, containerName))
 	defer cancelShutdown()
 
-	// Refresh Docker's VirtioFS cache for the mount point
-	// This is necessary because Docker Desktop caches mount information
+	// Clear VM cache and refresh Docker's VirtioFS view of the mount point
+	// This is necessary because Docker Desktop caches mount information,
+	// and freshly mounted volumes may not be visible without cache clearing
 	fmt.Println("Preparing Docker mount...")
+	if err := dockerManager.ClearVMCache(); err != nil {
+		// Non-fatal: log warning but continue
+		fmt.Fprintf(os.Stderr, "Warning: failed to clear VM cache: %v\n", err)
+	}
 	if err := dockerManager.RefreshMountCache(mountPoint); err != nil {
 		// Non-fatal: if refresh fails, the actual mount will report a clearer error
 		fmt.Fprintf(os.Stderr, "Warning: cache refresh failed (will retry on mount): %v\n", err)
