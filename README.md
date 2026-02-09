@@ -34,7 +34,8 @@ Delete the volume, delete everything. Move it to another machine, your context c
 │  /claude-env/       ← Encrypted volume mount       │
 │  ├── home/          ← $HOME                        │
 │  │   └── .claude/   ← Claude Code credentials      │
-│  ├── repos/         ← Shadow docs per project      │
+│  │       └── skills/← doc-sync (if --with-memory)  │
+│  ├── repos/         ← Shadow docs + memory DB      │
 │  └── auth/          ← API keys                     │
 │                                                     │
 └─────────────────────────────────────────────────────┘
@@ -77,6 +78,7 @@ You'll be prompted for:
 - `--volume PATH` — Explicit path
 - `--size N` — Volume size in GB
 - `--api-key KEY` — Store API key during setup
+- `--with-memory` — Install doc-sync skill with SQLite memory system
 
 ### 3. Start
 
@@ -177,6 +179,34 @@ Use this for:
 
 The symlink is created inside the container. Add `_docs` to your `.gitignore` to keep it out of version control.
 
+## Memory System
+
+Bootstrap with `--with-memory` to install the doc-sync skill—a SQLite-backed memory system that persists decisions, context, and learnings across sessions.
+
+```bash
+capsule bootstrap --global --with-memory
+```
+
+This installs:
+- **doc-sync skill** — Documentation lifecycle tooling and MCP server
+- **Memory database** — FTS5-powered search over stored memories
+- **MCP integration** — Claude Code can search and add memories natively
+
+Inside the container, Claude automatically queries memory at session start and stores conclusions before context rolls. The database lives in the encrypted volume alongside your project's shadow docs.
+
+Memory commands (inside container):
+```bash
+# Search past decisions
+python3 ~/.claude/skills/doc-sync/doctool.py memory search "auth strategy"
+
+# Store a decision
+python3 ~/.claude/skills/doc-sync/doctool.py memory add "Chose JWT over sessions" \
+    --tags auth,api --type decision
+
+# View recent memories
+python3 ~/.claude/skills/doc-sync/doctool.py memory recent
+```
+
 ## Scripting & Automation
 
 For CI/CD or scripted workflows:
@@ -213,6 +243,7 @@ Pre-configured tools:
 | **git** | Version control |
 | **ripgrep** | Fast recursive search |
 | **jq** | JSON processor |
+| **Python 3** | Required for doc-sync memory system |
 | **sudo** | Passwordless sudo for `claude` user |
 
 Update Claude Code: `claude-upgrade`
