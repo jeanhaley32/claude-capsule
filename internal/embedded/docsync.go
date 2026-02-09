@@ -22,6 +22,12 @@ var SchemaSql []byte
 //go:embed docsync/SKILL.md
 var SkillMd []byte
 
+//go:embed taskmgr/taskctl.py
+var TaskctlPy []byte
+
+//go:embed taskmgr/SKILL.md
+var TaskMgrSkillMd []byte
+
 // MemoryProtocolDocs contains the documentation for the memory retrieval system.
 // This is appended to CLAUDE.md during bootstrap.
 const MemoryProtocolDocs = `
@@ -106,42 +112,65 @@ This is not optional. Query before asking. Write before forgetting.
 const BeadsProtocolDocs = `
 ---
 
-## Issue Tracking (Beads)
+## Issue Tracking (Beads + Memory)
 
-The **Beads** issue tracker (` + "`bd`" + `) provides local-first, per-project issue tracking.
-All data lives on the encrypted volume — nothing is committed to git.
+The **Task Manager** wraps the beads issue tracker (` + "`bd`" + `) with automatic memory integration.
+Every task create/close writes a decision record to the collaboration memory system,
+making task history searchable across sessions.
 
-### Commands
+### Task Manager (Preferred)
 
 ` + "```bash" + `
-# List all open issues
-bd list
+TASK="python3 ~/.claude/skills/task-mgr/taskctl.py"
 
-# Create a new issue
-bd create "Short description of the issue"
+# Create a task (writes to memory)
+$TASK create "Fix auth token refresh" --tags auth,api
 
-# Show details of a specific issue
-bd show <issue-id>
+# List open tasks
+$TASK list
 
-# Close an issue
-bd close <issue-id>
+# Show task details
+$TASK show <issue-id>
 
-# Search issues by keyword
-bd search "keyword"
+# Close with summary (writes to memory)
+$TASK close <issue-id> --summary "Added retry logic"
+
+# Snapshot all open tasks to memory
+$TASK snapshot
+
+# Full context: task details + memory history
+$TASK context <issue-id>
+
+# Search tasks
+$TASK search "keyword"
+` + "```" + `
+
+### Direct bd Access
+
+For operations without memory integration:
+
+` + "```bash" + `
+bd list              # List open issues
+bd create "desc"     # Create (no memory)
+bd show <id>         # Show details
+bd close <id>        # Close (no memory)
+bd search "keyword"  # Search issues
 ` + "```" + `
 
 ### Storage
 
-- Data location: ` + "`/claude-env/repos/<project>/.beads/`" + `
+- Task data: ` + "`/claude-env/repos/<project>/.beads/`" + `
+- Memory data: ` + "`/workspace/_docs/.doc-index.db`" + ` (shared with doc-sync)
 - Per-project isolated — switching repos uses a separate database
 - Local-only on the encrypted volume — never touches git or GitHub
-- Persists across sessions, secured when the volume is locked
 
 ### When to Use
 
 - Track bugs, tasks, and TODOs that span multiple sessions
 - Record issues discovered during code review or exploration
 - Maintain a backlog of work items for the current project
+- Use ` + "`snapshot`" + ` before context rolls to preserve task state
+- Use ` + "`context`" + ` to recover task history in new sessions
 `
 
 // SettingsJSON is the Claude Code settings.json that configures the MCP server.
@@ -157,6 +186,9 @@ const SettingsJSON = `{
 
 // DocSyncSkillDir is the path within the encrypted volume for doc-sync files.
 const DocSyncSkillDir = "home/.claude/skills/doc-sync"
+
+// TaskMgrSkillDir is the path within the encrypted volume for task-mgr files.
+const TaskMgrSkillDir = "home/.claude/skills/task-mgr"
 
 // VersionFile is the path within the encrypted volume for version tracking.
 const VersionFile = "home/.claude/VERSION"
@@ -181,6 +213,33 @@ func WriteDocSyncFiles(mountPoint string) error {
 		{"mcp_server.py", MCPServerPy, constants.ExecutablePermissions},
 		{"schema.sql", SchemaSql, constants.PublicFilePermissions},
 		{"SKILL.md", SkillMd, constants.PublicFilePermissions},
+	}
+
+	for _, f := range files {
+		path := filepath.Join(skillDir, f.name)
+		if err := os.WriteFile(path, f.content, f.perm); err != nil {
+			return fmt.Errorf("failed to write %s: %w", f.name, err)
+		}
+	}
+
+	return nil
+}
+
+// WriteTaskMgrFiles writes the task-mgr skill files to the mounted volume.
+func WriteTaskMgrFiles(mountPoint string) error {
+	skillDir := filepath.Join(mountPoint, TaskMgrSkillDir)
+
+	if err := os.MkdirAll(skillDir, constants.DirPermissions); err != nil {
+		return fmt.Errorf("failed to create task-mgr skill directory: %w", err)
+	}
+
+	files := []struct {
+		name    string
+		content []byte
+		perm    os.FileMode
+	}{
+		{"taskctl.py", TaskctlPy, constants.ExecutablePermissions},
+		{"SKILL.md", TaskMgrSkillMd, constants.PublicFilePermissions},
 	}
 
 	for _, f := range files {
