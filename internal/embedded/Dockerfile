@@ -3,7 +3,7 @@ FROM node:20-slim
 LABEL maintainer="jeanhaley32"
 LABEL description="Claude Capsule workspace environment"
 
-# Install system dependencies including fish and fonts
+# Install system dependencies including fish, fonts, and Python
 RUN apt-get update && apt-get install -y \
     git \
     curl \
@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     sudo \
     fontconfig \
     unzip \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Nerd Font (FiraCode)
@@ -61,6 +62,15 @@ ln -sfn "$TARGET" "$TEMP"
 mv -f "$TEMP" "$LINK"
 
 echo "Symlink created: $LINK -> $TARGET"
+
+# Initialize memory database if doc-sync is installed
+DOCTOOL="/claude-env/home/.claude/skills/doc-sync/doctool.py"
+if [ -f "$DOCTOOL" ]; then
+    echo "Initializing memory database..."
+    if ! python3 "$DOCTOOL" index init 2>&1; then
+        echo "Warning: database init returned non-zero (may already exist)"
+    fi
+fi
 SCRIPT
 RUN chmod +x /usr/local/bin/setup-workspace-symlink.sh
 
