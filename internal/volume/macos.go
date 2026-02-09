@@ -230,6 +230,9 @@ func (m *MacOSVolumeManager) createDirectoryStructure(mountPoint string, cfg Boo
 	if err := embedded.WriteDocSyncFiles(mountPoint); err != nil {
 		return fmt.Errorf("failed to install doc-sync: %w", err)
 	}
+	if err := embedded.WriteTaskMgrFiles(mountPoint); err != nil {
+		return fmt.Errorf("failed to install task-mgr: %w", err)
+	}
 	if err := embedded.WriteSettingsJSON(mountPoint); err != nil {
 		return fmt.Errorf(`failed to write settings.json: %w
 
