@@ -255,7 +255,7 @@ func (m *Manager) CheckTmpFileSharing() error {
 
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
 		"-v", "/tmp:/test:ro",
-		"alpine", "ls", "/test")
+		"alpine", "test", "-d", "/test")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
