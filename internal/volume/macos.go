@@ -17,8 +17,9 @@ import (
 	"github.com/jeanhaley32/claude-capsule/internal/terminal"
 )
 
-// mountPointPrefix is the prefix for mount points in /Volumes (standard macOS location)
-const mountPointPrefix = "/Volumes/Capsule-"
+// MountPointPrefix is the prefix for mount points in /Volumes (standard macOS location).
+// Exported so the state detector can use it instead of hardcoding paths.
+const MountPointPrefix = "/Volumes/Capsule-"
 
 // Timeout for volume operations (hdiutil can be slow for large volumes)
 const volumeOperationTimeout = 5 * time.Minute
@@ -134,7 +135,7 @@ func (m *MacOSVolumeManager) generateMountPoint(volumePath string) string {
 	// Hash the volume path to get a deterministic, short identifier
 	hash := sha256.Sum256([]byte(volumePath))
 	shortHash := hex.EncodeToString(hash[:])[:12]
-	return mountPointPrefix + shortHash
+	return MountPointPrefix + shortHash
 }
 
 func (m *MacOSVolumeManager) Unmount(mountPoint string) error {
@@ -156,7 +157,7 @@ func (m *MacOSVolumeManager) Unmount(mountPoint string) error {
 	diskutilCmd := exec.CommandContext(diskutilCtx, "diskutil", "unmount", mountPoint)
 	if err := diskutilCmd.Run(); err == nil {
 		// diskutil unmount succeeded, clean up mount point directory
-		if strings.HasPrefix(mountPoint, mountPointPrefix) {
+		if strings.HasPrefix(mountPoint, MountPointPrefix) {
 			os.Remove(mountPoint)
 		}
 		return nil
@@ -183,7 +184,7 @@ func (m *MacOSVolumeManager) Unmount(mountPoint string) error {
 
 	// Clean up our mount point directory in /tmp
 	// Only remove if it's one of our managed mount points (safety check)
-	if strings.HasPrefix(mountPoint, mountPointPrefix) {
+	if strings.HasPrefix(mountPoint, MountPointPrefix) {
 		os.Remove(mountPoint)
 	}
 

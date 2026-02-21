@@ -27,11 +27,11 @@ RUN mkdir -p /usr/local/share/fonts && \
 # Install Starship prompt
 RUN curl -sS https://starship.rs/install.sh | sh -s -- -y
 
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI (pin version for reproducible builds)
+RUN npm install -g @anthropic-ai/claude-code@2.1.50
 
-# Install Beads issue tracker
-RUN npm install -g @beads/bd
+# Install Beads issue tracker (pin version for reproducible builds)
+RUN npm install -g @beads/bd@0.55.4
 
 # Create non-root user with sudo access
 RUN useradd -m -s /usr/bin/fish claude && \

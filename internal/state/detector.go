@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeanhaley32/claude-capsule/internal/constants"
+	"github.com/jeanhaley32/claude-capsule/internal/volume"
 )
 
 // Timeout for state detection commands
@@ -72,14 +73,17 @@ func (d *Detector) Detect() *EnvironmentState {
 }
 
 // checkVolumeMounted checks if the ClaudeEnv volume is mounted.
-// This mirrors the logic in volume/macos.go findMountPoint().
+// Uses volume.MountPointPrefix to stay consistent with volume/macos.go.
 func (d *Detector) checkVolumeMounted() (string, bool) {
-	// Check for unique mount points in /tmp (current approach)
-	entries, err := os.ReadDir("/tmp")
+	// Mount points live under /Volumes with prefix "Capsule-"
+	mountDir := filepath.Dir(volume.MountPointPrefix)           // "/Volumes"
+	prefix := filepath.Base(volume.MountPointPrefix)             // "Capsule-"
+
+	entries, err := os.ReadDir(mountDir)
 	if err == nil {
 		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), "capsule-") && entry.IsDir() {
-				mountPoint := filepath.Join("/tmp", entry.Name())
+			if strings.HasPrefix(entry.Name(), prefix) && entry.IsDir() {
+				mountPoint := filepath.Join(mountDir, entry.Name())
 				// Verify it's actually mounted by checking for content
 				contents, err := os.ReadDir(mountPoint)
 				if err == nil && len(contents) > 0 {

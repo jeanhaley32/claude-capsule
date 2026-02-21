@@ -270,7 +270,7 @@ func runBootstrap(cmd *cobra.Command, args []string) error {
 	}
 	defer password.Clear()
 
-	fmt.Printf("Creating encrypted volume at %s...\n", volumePath)
+	fmt.Fprintf(os.Stderr, "Creating encrypted volume at %s...\n", volumePath)
 
 	// Bootstrap the volume
 	cfg := volume.BootstrapConfig{
@@ -290,22 +290,22 @@ func runBootstrap(cmd *cobra.Command, args []string) error {
 		// Mount volume to write API key
 		mountPoint, err := volumeManager.Mount(volumePath, password)
 		if err != nil {
-			fmt.Printf("Warning: Could not mount volume to save API key: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: Could not mount volume to save API key: %v\n", err)
 		} else {
 			apiKeyPath := filepath.Join(mountPoint, "auth", "api-key")
 			if err := os.WriteFile(apiKeyPath, []byte(apiKey), constants.FilePermissions); err != nil {
-				fmt.Printf("Warning: Could not save API key: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Warning: Could not save API key: %v\n", err)
 			}
 			if err := volumeManager.Unmount(mountPoint); err != nil {
-				fmt.Printf("Warning: Could not unmount volume after saving API key: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Warning: Could not unmount volume after saving API key: %v\n", err)
 			}
 		}
 	}
 
-	fmt.Println("Volume created successfully!")
-	fmt.Println("")
-	fmt.Println("Next step:")
-	fmt.Println("  capsule start")
+	fmt.Fprintln(os.Stderr, "Volume created successfully!")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Next step:")
+	fmt.Fprintln(os.Stderr, "  capsule start")
 
 	return nil
 }
@@ -386,98 +386,124 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Check if Docker image exists, build if needed
 	if !embedded.ImageExists(docker.DefaultImageName) {
-		fmt.Printf("Docker image '%s' not found. Building...\n", docker.DefaultImageName)
+		fmt.Fprintf(os.Stderr, "Docker image '%s' not found. Building...\n", docker.DefaultImageName)
 		if err := embedded.BuildImage(docker.DefaultImageName); err != nil {
 			return fmt.Errorf("failed to build Docker image: %w", err)
 		}
-		fmt.Println("Docker image built successfully!")
+		fmt.Fprintln(os.Stderr, "Docker image built successfully!")
 	}
 
-	// Verify Docker Desktop can access /tmp for encrypted volume mounts
-	fmt.Println("Checking Docker file sharing configuration...")
+	// Verify Docker Desktop can access file mounts
+	fmt.Fprintln(os.Stderr, "Checking Docker file sharing configuration...")
 	if err := dockerManager.CheckTmpFileSharing(); err != nil {
 		return fmt.Errorf("Docker file sharing check failed: %w", err)
 	}
 
 	// Pre-start cleanup: remove any stale container from previous runs
-	// This prevents Docker mount conflicts even with stopped containers
-	fmt.Println("Checking for stale containers...")
+	fmt.Fprintln(os.Stderr, "Checking for stale containers...")
 	if err := dockerManager.RemoveContainer(containerName); err == nil {
-		fmt.Println("Removed stale container.")
+		fmt.Fprintln(os.Stderr, "Removed stale container.")
 		time.Sleep(docker.MountReleaseDelay)
 	}
 
-	// Check if volume is already mounted (reuse existing mount for fast re-entry)
-	var mountPoint string
-	var password *terminal.SecurePassword
-	if existingMount := volumeManager.GetMountPoint(volumePath); existingMount != "" {
-		fmt.Printf("Volume already mounted at %s\n", existingMount)
-		mountPoint = existingMount
-	} else {
-		// Prompt for password only when we need to mount
-		password, err = terminal.ReadPasswordSecure("Enter volume password: ")
-		if err != nil {
-			return fmt.Errorf("password error: %w", err)
-		}
+	// Mount volume (reuses existing mount for fast re-entry)
+	mountPoint, password, err := ensureVolumeMounted(volumeManager, volumePath)
+	if err != nil {
+		return err
+	}
+	if password != nil {
 		defer password.Clear()
-
-		// Mount volume
-		fmt.Println("Mounting encrypted volume...")
-		mountPoint, err = volumeManager.Mount(volumePath, password)
-		if err != nil {
-			return fmt.Errorf("failed to mount volume: %w", err)
-		}
-		fmt.Printf("Volume mounted at %s\n", mountPoint)
 	}
 
 	// Setup shutdown handler to lock volume on crash/termination
-	// This ensures the volume is secured if the process is killed unexpectedly
 	cancelShutdown := setupShutdownHandler(createShutdownCleanup(volumePath, containerName))
 	defer cancelShutdown()
 
-	// Clear VM cache and refresh Docker's VirtioFS view of the mount point
-	// This is necessary because Docker Desktop caches mount information,
-	// and freshly mounted volumes may not be visible without cache clearing
-	fmt.Println("Preparing Docker mount...")
-	if err := dockerManager.ClearVMCache(); err != nil {
-		// Non-fatal: log warning but continue
-		fmt.Fprintf(os.Stderr, "Warning: failed to clear VM cache: %v\n", err)
-	}
-	if err := dockerManager.RefreshMountCache(mountPoint); err != nil {
-		// Non-fatal: if refresh fails, the actual mount will report a clearer error
-		fmt.Fprintf(os.Stderr, "Warning: cache refresh failed (will retry on mount): %v\n", err)
-	}
+	// Prepare Docker Desktop's VirtioFS cache for the mount point
+	prepareMountCache(dockerManager, mountPoint)
 
-	// Start container with retry on Docker mount cache errors
-	fmt.Println("Starting container...")
-	containerConfig := docker.ContainerConfig{
+	// Start container (with retry on VirtioFS cache conflicts)
+	containerConfig := &docker.ContainerConfig{
 		ImageName:        docker.DefaultImageName,
 		ContainerName:    containerName,
 		VolumeMountPoint: mountPoint,
 		WorkspacePath:    workspacePath,
 	}
+	if err := startContainerWithRetry(dockerManager, volumeManager, containerConfig, volumePath, password); err != nil {
+		return err
+	}
 
-	startErr := dockerManager.Start(containerConfig)
+	// Enter container shell (sets up symlink, execs shell, cleans up on exit)
+	return enterContainerShell(dockerManager, volumeManager, containerConfig, repoID)
+}
+
+// ensureVolumeMounted checks if the volume is already mounted and reuses it,
+// or prompts for a password and mounts it. Returns the mount point and password
+// (password is nil when reusing an existing mount).
+func ensureVolumeMounted(vm volume.VolumeManager, volumePath string) (string, *terminal.SecurePassword, error) {
+	if existingMount := vm.GetMountPoint(volumePath); existingMount != "" {
+		fmt.Fprintf(os.Stderr, "Volume already mounted at %s\n", existingMount)
+		return existingMount, nil, nil
+	}
+
+	password, err := terminal.ReadPasswordSecure("Enter volume password: ")
+	if err != nil {
+		return "", nil, fmt.Errorf("password error: %w", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "Mounting encrypted volume...")
+	mountPoint, err := vm.Mount(volumePath, password)
+	if err != nil {
+		password.Clear()
+		return "", nil, fmt.Errorf("failed to mount volume: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Volume mounted at %s\n", mountPoint)
+
+	return mountPoint, password, nil
+}
+
+// prepareMountCache clears Docker Desktop's VM cache and refreshes its VirtioFS
+// view of the mount point. Failures are non-fatal warnings.
+func prepareMountCache(dm docker.DockerManager, mountPoint string) {
+	fmt.Fprintln(os.Stderr, "Preparing Docker mount...")
+	if err := dm.ClearVMCache(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to clear VM cache: %v\n", err)
+	}
+	if err := dm.RefreshMountCache(mountPoint); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: cache refresh failed (will retry on mount): %v\n", err)
+	}
+}
+
+// startContainerWithRetry starts the container. If Docker Desktop reports a
+// VirtioFS cache conflict ("file exists"), it unmounts, waits for the cache to
+// clear, remounts, and retries once. On retry, config.VolumeMountPoint is
+// updated to the new mount point.
+func startContainerWithRetry(
+	dm docker.DockerManager,
+	vm volume.VolumeManager,
+	config *docker.ContainerConfig,
+	volumePath string,
+	password *terminal.SecurePassword,
+) error {
+	fmt.Fprintln(os.Stderr, "Starting container...")
+	startErr := dm.Start(*config)
+
 	if startErr != nil && strings.Contains(startErr.Error(), "file exists") {
-		// Docker Desktop has stale mount cache - clean up and retry
-		fmt.Println("Docker mount cache conflict detected, cleaning up...")
+		fmt.Fprintln(os.Stderr, "Docker mount cache conflict detected, cleaning up...")
 
-		// Remove any partial container (errors ignored - container may not exist)
-		if err := dockerManager.RemoveContainer(containerName); err != nil {
+		if err := dm.RemoveContainer(config.ContainerName); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: container removal failed: %v\n", err)
 		}
-
-		// Unmount and remove mount directory (Unmount now handles directory cleanup)
-		if err := volumeManager.Unmount(mountPoint); err != nil {
+		if err := vm.Unmount(config.VolumeMountPoint); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: volume unmount failed: %v\n", err)
 		}
 
-		// Wait for Docker Desktop to clear its cache
-		fmt.Println("Waiting for Docker to refresh...")
+		fmt.Fprintln(os.Stderr, "Waiting for Docker to refresh...")
 		time.Sleep(docker.CacheRefreshDelay)
 
-		// If we didn't have a password (volume was pre-mounted), prompt now
+		// If volume was pre-mounted (no password), prompt now for remount
 		if password == nil {
+			var err error
 			password, err = terminal.ReadPasswordSecure("Enter volume password to remount: ")
 			if err != nil {
 				return fmt.Errorf("password error: %w", err)
@@ -485,67 +511,69 @@ func runStart(cmd *cobra.Command, args []string) error {
 			defer password.Clear()
 		}
 
-		// Remount
-		fmt.Println("Remounting volume...")
-		mountPoint, err = volumeManager.Mount(volumePath, password)
+		fmt.Fprintln(os.Stderr, "Remounting volume...")
+		mountPoint, err := vm.Mount(volumePath, password)
 		if err != nil {
 			return fmt.Errorf("failed to remount volume after cleanup: %w", err)
 		}
+		config.VolumeMountPoint = mountPoint
 
-		// Update config with new mount point
-		containerConfig.VolumeMountPoint = mountPoint
-
-		// Retry start
-		fmt.Println("Retrying container start...")
-		startErr = dockerManager.Start(containerConfig)
+		fmt.Fprintln(os.Stderr, "Retrying container start...")
+		startErr = dm.Start(*config)
 	}
 
 	if startErr != nil {
-		// Clean up any partially created container before returning error
-		fmt.Println("Cleaning up failed container...")
-		if err := dockerManager.RemoveContainer(containerName); err != nil {
+		fmt.Fprintln(os.Stderr, "Cleaning up failed container...")
+		if err := dm.RemoveContainer(config.ContainerName); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: container removal failed: %v\n", err)
 		}
-
-		if unmountErr := volumeManager.Unmount(mountPoint); unmountErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: volume unmount failed: %v\n", unmountErr)
+		if err := vm.Unmount(config.VolumeMountPoint); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: volume unmount failed: %v\n", err)
 		}
 		return fmt.Errorf("failed to start container: %w", startErr)
 	}
-	fmt.Println("Container started!")
 
-	// Setup symlink inside container
-	fmt.Println("Setting up shadow documentation...")
-	if err := dockerManager.SetupWorkspaceSymlink(containerName, repoID); err != nil {
-		// Clean up on failure
-		if stopErr := dockerManager.Stop(containerName); stopErr != nil {
+	fmt.Fprintln(os.Stderr, "Container started!")
+	return nil
+}
+
+// enterContainerShell sets up the workspace symlink, execs into the container
+// shell, and handles cleanup after the user exits.
+func enterContainerShell(
+	dm docker.DockerManager,
+	vm volume.VolumeManager,
+	config *docker.ContainerConfig,
+	repoID string,
+) error {
+	fmt.Fprintln(os.Stderr, "Setting up shadow documentation...")
+	if err := dm.SetupWorkspaceSymlink(config.ContainerName, repoID); err != nil {
+		if stopErr := dm.Stop(config.ContainerName); stopErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to stop container: %v\n", stopErr)
 		}
-		if unmountErr := volumeManager.Unmount(mountPoint); unmountErr != nil {
+		if unmountErr := vm.Unmount(config.VolumeMountPoint); unmountErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cleanup failed to unmount volume: %v\n", unmountErr)
 		}
 		return fmt.Errorf("failed to setup workspace symlink: %w", err)
 	}
-	fmt.Println("")
-	fmt.Println("Entering container... (type 'exit' to leave)")
-	fmt.Println("")
 
-	// Exec into container and wait for user to exit
-	execErr := dockerManager.Exec(containerName)
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Entering container... (type 'exit' to leave)")
+	fmt.Fprintln(os.Stderr, "")
+
+	execErr := dm.Exec(config.ContainerName)
 
 	// Clean up after user exits the shell
-	fmt.Println("")
-	fmt.Println("Cleaning up...")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Cleaning up...")
 
-	// Stop container (keep volume mounted for fast re-entry)
-	if err := dockerManager.Stop(containerName); err != nil {
+	if err := dm.Stop(config.ContainerName); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to stop container: %v\n", err)
 	} else {
-		fmt.Println("Container stopped.")
+		fmt.Fprintln(os.Stderr, "Container stopped.")
 	}
 
-	fmt.Println("Volume remains unlocked for quick re-entry.")
-	fmt.Println("Run 'capsule lock' when done to secure your credentials.")
+	fmt.Fprintln(os.Stderr, "Volume remains unlocked for quick re-entry.")
+	fmt.Fprintln(os.Stderr, "Run 'capsule lock' when done to secure your credentials.")
 
 	// Ignore common exit codes (0 = normal, 130 = Ctrl+C)
 	if execErr != nil {
@@ -745,15 +773,15 @@ func runStop(cmd *cobra.Command, args []string) error {
 	dockerManager := docker.NewManager()
 
 	// Stop container (symlink inside container is destroyed with it)
-	fmt.Printf("Stopping container %s...\n", containerName)
+	fmt.Fprintf(os.Stderr, "Stopping container %s...\n", containerName)
 	if err := dockerManager.Stop(containerName); err != nil {
-		fmt.Printf("Warning: Failed to stop container: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: Failed to stop container: %v\n", err)
 	} else {
-		fmt.Println("Container stopped.")
+		fmt.Fprintln(os.Stderr, "Container stopped.")
 	}
 
 	// Keep volume mounted for quick re-entry
-	fmt.Println("Volume remains mounted. Run 'capsule lock' to unmount and secure.")
+	fmt.Fprintln(os.Stderr, "Volume remains mounted. Run 'capsule lock' to unmount and secure.")
 	return nil
 }
 
@@ -867,16 +895,16 @@ func runBuildImage(cmd *cobra.Command, args []string) error {
 	}
 
 	if !force && embedded.ImageExists(docker.DefaultImageName) {
-		fmt.Printf("Docker image '%s' already exists. Use --force to rebuild.\n", docker.DefaultImageName)
+		fmt.Fprintf(os.Stderr, "Docker image '%s' already exists. Use --force to rebuild.\n", docker.DefaultImageName)
 		return nil
 	}
 
-	fmt.Printf("Building Docker image '%s'...\n", docker.DefaultImageName)
+	fmt.Fprintf(os.Stderr, "Building Docker image '%s'...\n", docker.DefaultImageName)
 	if err := embedded.BuildImage(docker.DefaultImageName); err != nil {
 		return fmt.Errorf("failed to build image: %w", err)
 	}
 
-	fmt.Println("Docker image built successfully!")
+	fmt.Fprintln(os.Stderr, "Docker image built successfully!")
 	return nil
 }
 
