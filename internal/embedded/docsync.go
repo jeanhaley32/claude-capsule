@@ -10,6 +10,9 @@ import (
 	"github.com/jeanhaley32/claude-capsule/internal/constants"
 )
 
+//go:embed docsync/core.py
+var CorePy []byte
+
 //go:embed docsync/doctool.py
 var DoctoolPy []byte
 
@@ -209,6 +212,7 @@ func WriteDocSyncFiles(mountPoint string) error {
 		content []byte
 		perm    os.FileMode
 	}{
+		{"core.py", CorePy, constants.ExecutablePermissions},
 		{"doctool.py", DoctoolPy, constants.ExecutablePermissions},
 		{"mcp_server.py", MCPServerPy, constants.ExecutablePermissions},
 		{"schema.sql", SchemaSql, constants.PublicFilePermissions},

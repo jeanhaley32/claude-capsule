@@ -44,6 +44,11 @@ from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
 
+from core import (
+    hash_content, chunk_document, ingest_document, insert_chunk, infer_tags,
+    get_connection as core_get_connection,
+)
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -1136,67 +1141,17 @@ class DocReports:
 # =============================================================================
 
 class DocMemory:
-    """Handles content chunking and FTS5-based retrieval for AI collaboration."""
+    """Handles content chunking and FTS5-based retrieval for AI collaboration.
+
+    Delegates hashing, chunking, and ingestion to core.py to stay in sync
+    with the MCP server implementation.
+    """
 
     def __init__(self):
         self.db_path = DB_PATH
 
     def get_connection(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _hash_content(self, content: str) -> str:
-        """Generate SHA256 hash for deduplication."""
-        return hashlib.sha256(content.encode()).hexdigest()
-
-    def _chunk_document(self, content: str, source: str) -> list[dict]:
-        """
-        Chunk a markdown document by headings.
-        Returns list of {content, section, source}.
-        """
-        chunks = []
-        lines = content.split('\n')
-
-        current_section = []
-        current_headings = []
-
-        for line in lines:
-            # Detect heading
-            if line.startswith('#'):
-                # Save previous section if it has content
-                if current_section:
-                    section_content = '\n'.join(current_section).strip()
-                    if section_content and len(section_content) > 50:  # Skip tiny sections
-                        chunks.append({
-                            'content': section_content,
-                            'section': ' > '.join(current_headings) if current_headings else 'Introduction',
-                            'source': source,
-                        })
-                    current_section = []
-
-                # Update heading stack
-                level = len(line) - len(line.lstrip('#'))
-                heading_text = line.lstrip('#').strip()
-
-                # Trim heading stack to current level
-                current_headings = current_headings[:level-1]
-                current_headings.append(heading_text)
-
-            current_section.append(line)
-
-        # Don't forget the last section
-        if current_section:
-            section_content = '\n'.join(current_section).strip()
-            if section_content and len(section_content) > 50:
-                chunks.append({
-                    'content': section_content,
-                    'section': ' > '.join(current_headings) if current_headings else 'Content',
-                    'source': source,
-                })
-
-        return chunks
+        return core_get_connection(self.db_path)
 
     def ingest(self, path: str, tags: list = None) -> int:
         """Ingest a document into the memory system. Returns chunk count."""
@@ -1205,61 +1160,15 @@ class DocMemory:
             print(f"File not found: {path}")
             return 0
 
-        with open(full_path) as f:
-            content = f.read()
-
-        chunks = self._chunk_document(content, path)
-
-        if not chunks:
-            print(f"No chunks generated from: {path}")
-            return 0
-
         conn = self.get_connection()
-        now = datetime.now().isoformat()
-
-        # Infer tags from path if not provided
-        if not tags:
-            tags = []
-            path_lower = path.lower()
-            for tag_hint in ['infra', 'agents', 'apps', 'shared', 'pipelines', 'ecs', 'lambda']:
-                if tag_hint in path_lower:
-                    tags.append(tag_hint)
-            if not tags:
-                tags = ['general']
-
-        tags_str = ' '.join(tags)  # Space-separated for FTS
-        tags_csv = ','.join(tags)  # Comma-separated for metadata
-
-        inserted = 0
-        for chunk in chunks:
-            content_hash = self._hash_content(chunk['content'])
-
-            # Check for duplicate
-            existing = conn.execute(
-                "SELECT id FROM chunk_meta WHERE content_hash = ?", (content_hash,)
-            ).fetchone()
-
-            if existing:
-                continue  # Skip duplicate
-
-            # Insert into metadata table
-            cursor = conn.execute("""
-                INSERT INTO chunk_meta (source, section, tags, chunk_type, created_at, content_hash)
-                VALUES (?, ?, ?, 'doc', ?, ?)
-            """, (chunk['source'], chunk['section'], tags_csv, now, content_hash))
-
-            # Insert into FTS table
-            conn.execute("""
-                INSERT INTO chunks_fts (rowid, content, source, section, tags)
-                VALUES (?, ?, ?, ?, ?)
-            """, (cursor.lastrowid, chunk['content'], chunk['source'], chunk['section'], tags_str))
-
-            inserted += 1
-
+        inserted = ingest_document(conn, path, DOCS_ROOT, tags)
         conn.commit()
         conn.close()
 
-        print(f"Ingested: {path} ({inserted} chunks)")
+        if inserted == 0:
+            print(f"No chunks generated from: {path}")
+        else:
+            print(f"Ingested: {path} ({inserted} chunks)")
         return inserted
 
     def ingest_all(self) -> int:
@@ -1285,38 +1194,22 @@ class DocMemory:
             print("ERROR: At least one tag required")
             return False
 
-        conn = self.get_connection()
-        now = datetime.now().isoformat()
-        content_hash = self._hash_content(content)
-
-        # Check for duplicate
-        existing = conn.execute(
-            "SELECT id FROM chunk_meta WHERE content_hash = ?", (content_hash,)
-        ).fetchone()
-
-        if existing:
-            print("Note already exists (duplicate content)")
-            conn.close()
-            return False
-
-        # Default source to session date
         if not source:
             source = f"session:{datetime.now().strftime('%Y-%m-%d')}"
 
         tags_str = ' '.join(tags)
         tags_csv = ','.join(tags)
 
-        # Insert into metadata table
-        cursor = conn.execute("""
-            INSERT INTO chunk_meta (source, section, tags, chunk_type, created_at, content_hash)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (source, 'Note', tags_csv, chunk_type, now, content_hash))
+        conn = self.get_connection()
+        inserted = insert_chunk(
+            conn, content, source, 'Note',
+            tags_csv, tags_str, chunk_type,
+        )
 
-        # Insert into FTS table
-        conn.execute("""
-            INSERT INTO chunks_fts (rowid, content, source, section, tags)
-            VALUES (?, ?, ?, ?, ?)
-        """, (cursor.lastrowid, content, source, 'Note', tags_str))
+        if not inserted:
+            print("Note already exists (duplicate content)")
+            conn.close()
+            return False
 
         conn.commit()
         conn.close()
@@ -1505,10 +1398,8 @@ class DocMemory:
         conn = self.get_connection()
 
         if path:
-            # Single document refresh
             sources = [path]
         else:
-            # All docs - get unique sources where type='doc'
             rows = conn.execute(
                 "SELECT DISTINCT source FROM chunk_meta WHERE chunk_type = 'doc'"
             ).fetchall()
@@ -1517,8 +1408,8 @@ class DocMemory:
         deleted = 0
         ingested = 0
 
+        # Delete existing doc chunks
         for source in sources:
-            # Delete existing doc chunks for this source
             chunks = conn.execute(
                 "SELECT id FROM chunk_meta WHERE source = ? AND chunk_type = 'doc'",
                 (source,)
@@ -1529,16 +1420,13 @@ class DocMemory:
                 conn.execute("DELETE FROM chunk_meta WHERE id = ?", (chunk['id'],))
                 deleted += 1
 
-            conn.commit()
+        conn.commit()
 
-            # Re-ingest if file exists
-            full_path = DOCS_ROOT / source
-            if full_path.exists():
-                # Close connection before ingesting (ingest opens its own)
-                conn.close()
-                ingested += self.ingest(source)
-                conn = self.get_connection()
+        # Re-ingest from files
+        for source in sources:
+            ingested += ingest_document(conn, source, DOCS_ROOT)
 
+        conn.commit()
         conn.close()
         return {'deleted': deleted, 'ingested': ingested, 'sources': len(sources)}
 

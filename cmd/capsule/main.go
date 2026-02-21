@@ -22,7 +22,7 @@ import (
 	"github.com/jeanhaley32/claude-capsule/internal/volume"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 // setupShutdownHandler registers signal handlers for graceful shutdown.
 // Returns a cancel function that should be deferred to cleanup the handler.

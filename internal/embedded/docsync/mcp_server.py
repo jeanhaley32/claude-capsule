@@ -13,6 +13,7 @@ Transport: stdio (read JSON from stdin, write JSON to stdout)
 """
 
 import json
+import subprocess
 import sys
 import sqlite3
 import os
@@ -22,19 +23,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from core import (
+    DB_PATH, DOCS_ROOT, VALID_GENRES,
+    get_connection, hash_content, chunk_document, ingest_document,
+    insert_chunk, infer_tags,
+)
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-DB_PATH = Path("/workspace/_docs/.doc-index.db")
-DOCS_ROOT = Path("/workspace/_docs")
 SCHEMA_PATH = Path(os.path.expanduser("~/.claude/skills/doc-sync/schema.sql"))
-
-# Controlled vocabulary for document genres
-VALID_GENRES = [
-    "overview", "gotchas", "architecture", "deep-dive",
-    "adr", "runbook", "rfc", "guide", "reference"
-]
 
 # Logging to stderr (not stdout — that's for JSON-RPC)
 logging.basicConfig(
@@ -43,19 +42,6 @@ logging.basicConfig(
     stream=sys.stderr
 )
 log = logging.getLogger("doc-sync-mcp")
-
-# =============================================================================
-# DATABASE ACCESS
-# =============================================================================
-
-def get_connection():
-    """Get a database connection."""
-    if not DB_PATH.exists():
-        raise RuntimeError(f"Database not found: {DB_PATH}. Run 'doctool index init' first.")
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.row_factory = sqlite3.Row
-    return conn
 
 # =============================================================================
 # TOOL IMPLEMENTATIONS
@@ -511,13 +497,6 @@ def tool_doc_suggest_tags(partial: str) -> dict:
 # MEMORY TOOLS (FTS5-based retrieval)
 # =============================================================================
 
-import hashlib
-
-def _hash_content(content: str) -> str:
-    """Generate SHA256 hash for deduplication."""
-    return hashlib.sha256(content.encode()).hexdigest()
-
-
 def tool_memory_search(query: str, tags: list[str] = None, limit: int = 10) -> dict:
     """
     Search memory chunks using FTS5 full-text search.
@@ -551,6 +530,7 @@ def tool_memory_search(query: str, tags: list[str] = None, limit: int = 10) -> d
         try:
             rows = conn.execute("""
                 SELECT
+                    m.id as chunk_id,
                     c.content,
                     c.source,
                     c.section,
@@ -568,6 +548,7 @@ def tool_memory_search(query: str, tags: list[str] = None, limit: int = 10) -> d
             # Fallback to LIKE query
             rows = conn.execute("""
                 SELECT
+                    m.id as chunk_id,
                     c.content,
                     c.source,
                     c.section,
@@ -597,6 +578,7 @@ def tool_memory_search(query: str, tags: list[str] = None, limit: int = 10) -> d
             is_stale = age_days > 90
 
             results.append({
+                'id': row['chunk_id'],
                 'content': row['content'][:500] + '...' if len(row['content']) > 500 else row['content'],
                 'source': row['source'],
                 'section': row['section'],
@@ -632,35 +614,21 @@ def tool_memory_add(content: str, tags: list[str], source: str = None, chunk_typ
     if not tags or len(tags) == 0:
         return {"success": False, "error": "At least one tag required"}
 
-    conn = get_connection()
-    now = datetime.now().isoformat()
-    content_hash = _hash_content(content)
-
-    # Check for duplicate
-    existing = conn.execute(
-        "SELECT id FROM chunk_meta WHERE content_hash = ?", (content_hash,)
-    ).fetchone()
-
-    if existing:
-        conn.close()
-        return {"success": False, "error": "Duplicate content (already exists)"}
-
     if not source:
         source = f"session:{datetime.now().strftime('%Y-%m-%d')}"
 
     tags_str = ' '.join(tags)
     tags_csv = ','.join(tags)
 
+    conn = get_connection()
     try:
-        cursor = conn.execute("""
-            INSERT INTO chunk_meta (source, section, tags, chunk_type, created_at, content_hash)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (source, 'Note', tags_csv, chunk_type, now, content_hash))
+        inserted = insert_chunk(
+            conn, content, source, 'Note',
+            tags_csv, tags_str, chunk_type,
+        )
 
-        conn.execute("""
-            INSERT INTO chunks_fts (rowid, content, source, section, tags)
-            VALUES (?, ?, ?, ?, ?)
-        """, (cursor.lastrowid, content, source, 'Note', tags_str))
+        if not inserted:
+            return {"success": False, "error": "Duplicate content (already exists)"}
 
         conn.commit()
 
@@ -738,7 +706,7 @@ def tool_memory_recent(days: int = 7, limit: int = 10) -> list[dict]:
 
     try:
         rows = conn.execute("""
-            SELECT c.content, c.source, c.section, c.tags,
+            SELECT m.id as chunk_id, c.content, c.source, c.section, c.tags,
                    m.chunk_type, m.created_at
             FROM chunks_fts c
             JOIN chunk_meta m ON c.rowid = m.id
@@ -763,6 +731,7 @@ def tool_memory_recent(days: int = 7, limit: int = 10) -> list[dict]:
 
             preview = row['content'][:200].replace('\n', ' ')
             results.append({
+                'id': row['chunk_id'],
                 'date': created_at[:10],
                 'type': row['chunk_type'],
                 'tags': row['tags'],
@@ -778,114 +747,39 @@ def tool_memory_recent(days: int = 7, limit: int = 10) -> list[dict]:
         conn.close()
 
 
-def _chunk_document(content: str, source: str) -> list[dict]:
+def tool_memory_delete(chunk_id: int) -> dict:
     """
-    Chunk a markdown document by headings.
-    Returns list of {content, section, source}.
+    Delete a memory chunk by ID.
+
+    Args:
+        chunk_id: The ID of the chunk to delete (from memory_search or memory_recent)
+
+    Returns:
+        Dictionary with success status
     """
-    chunks = []
-    lines = content.split('\n')
-
-    current_section = []
-    current_headings = []
-
-    for line in lines:
-        # Detect heading
-        if line.startswith('#'):
-            # Save previous section if it has content
-            if current_section:
-                section_content = '\n'.join(current_section).strip()
-                if section_content and len(section_content) > 50:  # Skip tiny sections
-                    chunks.append({
-                        'content': section_content,
-                        'section': ' > '.join(current_headings) if current_headings else 'Introduction',
-                        'source': source,
-                    })
-                current_section = []
-
-            # Update heading stack
-            level = len(line) - len(line.lstrip('#'))
-            heading_text = line.lstrip('#').strip()
-
-            # Trim heading stack to current level
-            current_headings = current_headings[:level-1]
-            current_headings.append(heading_text)
-
-        current_section.append(line)
-
-    # Don't forget the last section
-    if current_section:
-        section_content = '\n'.join(current_section).strip()
-        if section_content and len(section_content) > 50:
-            chunks.append({
-                'content': section_content,
-                'section': ' > '.join(current_headings) if current_headings else 'Content',
-                'source': source,
-            })
-
-    return chunks
-
-
-def _ingest_document(path: str, tags: list = None) -> int:
-    """Ingest a single document into memory. Returns chunk count."""
-    full_path = DOCS_ROOT / path
-    if not full_path.exists():
-        return 0
-
-    content = full_path.read_text()
-    chunks = _chunk_document(content, path)
-
-    if not chunks:
-        return 0
-
     conn = get_connection()
-    now = datetime.now().isoformat()
 
-    # Infer tags from path if not provided
-    if not tags:
-        tags = []
-        path_lower = path.lower()
-        for tag_hint in ['infra', 'agents', 'apps', 'shared', 'pipelines', 'ecs', 'lambda']:
-            if tag_hint in path_lower:
-                tags.append(tag_hint)
-        if not tags:
-            tags = ['general']
-
-    tags_str = ' '.join(tags)  # Space-separated for FTS
-    tags_csv = ','.join(tags)  # Comma-separated for metadata
-
-    inserted = 0
     try:
-        for chunk in chunks:
-            content_hash = _hash_content(chunk['content'])
+        # Check if chunk exists
+        existing = conn.execute(
+            "SELECT id FROM chunk_meta WHERE id = ?", (chunk_id,)
+        ).fetchone()
 
-            # Check for duplicate
-            existing = conn.execute(
-                "SELECT id FROM chunk_meta WHERE content_hash = ?", (content_hash,)
-            ).fetchone()
+        if not existing:
+            return {"success": False, "error": f"Chunk {chunk_id} not found"}
 
-            if existing:
-                continue  # Skip duplicate
-
-            # Insert into metadata table
-            cursor = conn.execute("""
-                INSERT INTO chunk_meta (source, section, tags, chunk_type, created_at, content_hash)
-                VALUES (?, ?, ?, 'doc', ?, ?)
-            """, (chunk['source'], chunk['section'], tags_csv, now, content_hash))
-
-            # Insert into FTS table
-            conn.execute("""
-                INSERT INTO chunks_fts (rowid, content, source, section, tags)
-                VALUES (?, ?, ?, ?, ?)
-            """, (cursor.lastrowid, chunk['content'], chunk['source'], chunk['section'], tags_str))
-
-            inserted += 1
-
+        # Delete from both tables (FTS + metadata)
+        conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (chunk_id,))
+        conn.execute("DELETE FROM chunk_meta WHERE id = ?", (chunk_id,))
         conn.commit()
+
+        return {"success": True, "deleted_id": chunk_id}
+
     finally:
         conn.close()
 
-    return inserted
+
+# _chunk_document, _ingest_document, _hash_content — now in core.py
 
 
 def tool_memory_refresh(path: str = None) -> dict:
@@ -931,20 +825,216 @@ def tool_memory_refresh(path: str = None) -> dict:
 
             conn.commit()
 
-        # Close connection before re-ingesting
+        conn.commit()
         conn.close()
 
         # Re-ingest each source if file exists
+        conn = get_connection()
         for source in sources:
-            full_path = DOCS_ROOT / source
-            if full_path.exists():
-                ingested += _ingest_document(source)
+            ingested += ingest_document(conn, source)
+        conn.commit()
+        conn.close()
 
     except Exception:
         conn.close()
         raise
 
     return {'deleted': deleted, 'ingested': ingested, 'sources': len(sources)}
+
+
+# =============================================================================
+# TASK CONTEXT TOOLS (Beads + Memory + Docs integration)
+# =============================================================================
+
+def _validate_bead(bead_id: str) -> tuple[dict | None, str | None]:
+    """
+    Validate a bead exists via `bd show --json`.
+    Returns (bead_dict, None) on success or (None, error_message) on failure.
+    """
+    try:
+        result = subprocess.run(
+            ['bd', 'show', bead_id, '--json'],
+            capture_output=True, text=True, timeout=10
+        )
+    except FileNotFoundError:
+        return None, "bd command not found — is beads installed?"
+    except subprocess.TimeoutExpired:
+        return None, f"Timed out querying bead {bead_id}"
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        return None, f"Bead {bead_id} not found: {stderr}"
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        # bd show returns plain text errors even on exit 0
+        msg = (result.stdout or result.stderr).strip()
+        return None, msg if msg else f"Bead {bead_id} not found"
+
+    # bd show returns an array — take the first element
+    if isinstance(data, list):
+        if not data:
+            return None, f"Bead {bead_id} not found (empty result)"
+        data = data[0]
+
+    return data, None
+
+
+def task_save(bead_id: str, content: str, chunk_type: str = 'note') -> dict:
+    """
+    Save context (decision, note, state) linked to a beads task.
+    Tags the memory chunk with the bead ID so task_load can retrieve it.
+
+    Args:
+        bead_id: Beads issue ID (e.g., workspace-9j3)
+        content: Context to save
+        chunk_type: Type of context — note, decision, or state (default: note)
+
+    Returns:
+        Dictionary with success status and saved chunk info
+    """
+    if not content.strip():
+        return {"success": False, "error": "Content cannot be empty"}
+
+    valid_types = ('note', 'decision', 'state')
+    if chunk_type not in valid_types:
+        return {"success": False, "error": f"Invalid chunk_type: {chunk_type}. Must be one of {valid_types}"}
+
+    # 1. Validate bead exists
+    bead, error = _validate_bead(bead_id)
+    if error:
+        return {"success": False, "error": error}
+
+    # 2. Save memory chunk tagged with bead ID
+    mem_result = tool_memory_add(
+        content=content,
+        tags=[bead_id, chunk_type],
+        source=f"bead:{bead_id}",
+        chunk_type=chunk_type  # chunk_meta.chunk_type is unconstrained TEXT
+    )
+
+    if not mem_result.get("success"):
+        return mem_result
+
+    # 3. Mark bead as having context via metadata
+    try:
+        subprocess.run(
+            ['bd', 'update', bead_id, '--metadata',
+             json.dumps({"has_context": True})],
+            capture_output=True, timeout=10
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass  # Non-fatal — context was saved, metadata is optional
+
+    return {
+        "success": True,
+        "bead_id": bead_id,
+        "bead_title": bead.get("title", ""),
+        "chunk_type": chunk_type,
+        "content_preview": content[:100] + ('...' if len(content) > 100 else '')
+    }
+
+
+def task_load(bead_id: str) -> dict:
+    """
+    Load all context for a beads task — bead details, memory chunks, and linked docs.
+
+    Args:
+        bead_id: Beads issue ID (e.g., workspace-9j3)
+
+    Returns:
+        Dictionary with bead details, associated memory, and linked documents
+    """
+    # 1. Get bead details
+    bead, error = _validate_bead(bead_id)
+    if error:
+        return {"success": False, "error": error}
+
+    # 2. Search memory for chunks tagged with this bead
+    mem_results = tool_memory_search(
+        query=bead_id,
+        tags=[bead_id],
+        limit=50
+    )
+
+    # 3. Search docs tagged with this bead
+    doc_results = tool_doc_search(tags=[bead_id])
+
+    return {
+        "success": True,
+        "bead": {
+            "id": bead.get("id"),
+            "title": bead.get("title"),
+            "status": bead.get("status"),
+            "priority": bead.get("priority"),
+            "type": bead.get("issue_type"),
+            "description": bead.get("description"),
+            "owner": bead.get("owner"),
+        },
+        "memory": mem_results.get("results", []),
+        "memory_count": mem_results.get("count", 0),
+        "docs": doc_results.get("documents", []),
+        "docs_count": doc_results.get("count", 0),
+    }
+
+
+def task_link_doc(bead_id: str, doc_path: str) -> dict:
+    """
+    Associate a _docs/ document with a beads task by adding the
+    bead ID as a tag in the doc index.
+
+    Args:
+        bead_id: Beads issue ID (e.g., workspace-9j3)
+        doc_path: Path to document (relative to _docs/)
+
+    Returns:
+        Dictionary with success status
+    """
+    # 1. Validate bead exists
+    bead, error = _validate_bead(bead_id)
+    if error:
+        return {"success": False, "error": error}
+
+    # 2. Add bead ID as tag on the doc in the index
+    conn = get_connection()
+    try:
+        doc = conn.execute(
+            "SELECT id FROM documents WHERE path = ?",
+            (doc_path,)
+        ).fetchone()
+
+        if not doc:
+            return {
+                "success": False,
+                "error": f"Document not in index: {doc_path}. Register it first with doc_register."
+            }
+
+        now = datetime.now().isoformat()
+        tag_name = bead_id.lower()
+
+        # Ensure the tag exists
+        conn.execute(
+            "INSERT OR IGNORE INTO tags (name, created_at) VALUES (?, ?)",
+            (tag_name, now)
+        )
+
+        # Link tag to document
+        conn.execute("""
+            INSERT OR IGNORE INTO document_tags (document_id, tag_id)
+            SELECT ?, id FROM tags WHERE name = ?
+        """, (doc["id"], tag_name))
+
+        conn.commit()
+
+        return {
+            "success": True,
+            "bead_id": bead_id,
+            "bead_title": bead.get("title", ""),
+            "doc_path": doc_path,
+        }
+    finally:
+        conn.close()
 
 
 # =============================================================================
@@ -1163,6 +1253,20 @@ TOOLS = {
             }
         }
     },
+    "memory_delete": {
+        "function": tool_memory_delete,
+        "description": "Delete a memory chunk by ID. Use memory_recent or memory_search to find chunk IDs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {
+                    "type": "integer",
+                    "description": "ID of the chunk to delete"
+                }
+            },
+            "required": ["chunk_id"]
+        }
+    },
     "memory_refresh": {
         "function": tool_memory_refresh,
         "description": "Refresh doc chunks from source files. Deletes stale chunks and re-ingests current content. Preserves notes/decisions.",
@@ -1175,7 +1279,63 @@ TOOLS = {
                 }
             }
         }
-    }
+    },
+    # Task context tools (beads + memory + docs integration)
+    "task_save": {
+        "function": task_save,
+        "description": "Save context (decision, note, state) linked to a beads task. Tags the memory chunk with the bead ID for cross-session retrieval via task_load.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bead_id": {
+                    "type": "string",
+                    "description": "Beads issue ID (e.g., workspace-9j3)"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Context to save (decision rationale, working state, notes)"
+                },
+                "chunk_type": {
+                    "type": "string",
+                    "enum": ["note", "decision", "state"],
+                    "description": "Type of context: note (general), decision (architectural choice), state (work-in-progress snapshot). Default: note"
+                }
+            },
+            "required": ["bead_id", "content"]
+        }
+    },
+    "task_load": {
+        "function": task_load,
+        "description": "Load all context for a beads task — bead details, associated memory chunks (decisions, notes, state), and linked documents. Use this to restore full task context at session start.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bead_id": {
+                    "type": "string",
+                    "description": "Beads issue ID (e.g., workspace-9j3)"
+                }
+            },
+            "required": ["bead_id"]
+        }
+    },
+    "task_link_doc": {
+        "function": task_link_doc,
+        "description": "Associate a _docs/ document with a beads task by adding the bead ID as a tag in the doc index. The doc must already be registered.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bead_id": {
+                    "type": "string",
+                    "description": "Beads issue ID (e.g., workspace-9j3)"
+                },
+                "doc_path": {
+                    "type": "string",
+                    "description": "Path to document (relative to _docs/). Must already be in the doc index."
+                }
+            },
+            "required": ["bead_id", "doc_path"]
+        }
+    },
 }
 
 # =============================================================================
