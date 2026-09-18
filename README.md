@@ -340,8 +340,17 @@ sudo systemctl enable docker  # start on boot
 
 If the container or system crashed while the volume was mounted, clean up manually:
 ```bash
-sudo umount /tmp/capsule-*
+sudo umount ~/.capsule/mounts/capsule-*
 sudo cryptsetup luksClose capsule-<hash>   # hash shown in 'capsule status'
+rmdir ~/.capsule/mounts/capsule-*
+```
+
+### Linux: rebuilding the image after switching users
+
+The Docker image bakes in the host user's UID/GID at build time. If you
+run `capsule` as a different user, rebuild the image first:
+```bash
+capsule build-image --force
 ```
 
 ## Development
