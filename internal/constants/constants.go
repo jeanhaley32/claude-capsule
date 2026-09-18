@@ -10,6 +10,9 @@ const (
 	// MacOSVolumeName is the volume label used when creating the encrypted volume.
 	MacOSVolumeName = "Capsule"
 
+	// LinuxVolumeFile is the filename for the encrypted LUKS volume on Linux.
+	LinuxVolumeFile = "capsule.luks"
+
 	// CapsuleConfigDir is the name of the user config directory under home.
 	CapsuleConfigDir = ".capsule"
 

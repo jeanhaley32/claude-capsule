@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -246,7 +247,7 @@ func runBootstrap(cmd *cobra.Command, args []string) error {
 		// Interactive prompt for location
 		options := []string{
 			"Global (~/.capsule/volumes/) - accessible from any project (Recommended)",
-			"Local (./capsule.sparseimage) - specific to this directory",
+			fmt.Sprintf("Local (./%s) - specific to this directory", volume.VolumeFileName()),
 		}
 		choice, err := terminal.PromptChoice("Where should the encrypted volume be stored?", options, 0)
 		if err != nil {
@@ -448,8 +449,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	cancelShutdown := setupShutdownHandler(createShutdownCleanup(volumePath, containerName))
 	defer cancelShutdown()
 
-	// Prepare Docker Desktop's VirtioFS cache for the mount point
-	prepareMountCache(dockerManager, mountPoint)
+	// Prepare Docker Desktop's VirtioFS cache for the mount point (macOS only)
+	if runtime.GOOS == "darwin" {
+		prepareMountCache(dockerManager, mountPoint)
+	}
 
 	// Start container (with retry on VirtioFS cache conflicts)
 	containerConfig := &docker.ContainerConfig{
@@ -517,7 +520,7 @@ func startContainerWithRetry(
 	fmt.Fprintln(os.Stderr, "Starting container...")
 	startErr := dm.Start(*config)
 
-	if startErr != nil && strings.Contains(startErr.Error(), "file exists") {
+	if startErr != nil && runtime.GOOS == "darwin" && strings.Contains(startErr.Error(), "file exists") {
 		fmt.Fprintln(os.Stderr, "Docker mount cache conflict detected, cleaning up...")
 
 		if err := dm.RemoveContainer(config.ContainerName); err != nil {
