@@ -107,8 +107,11 @@ TARGET="/claude-env/repos/${REPO_ID}"
 LINK="/workspace/_docs"
 TEMP="${LINK}.tmp.$$"
 
-# Ensure target directory exists
-mkdir -p "$TARGET"
+# Ensure target directory exists and is owned by the claude user.
+# Use sudo because the volume may have been bootstrapped with a different
+# host UID and the claude user needs write access regardless.
+sudo mkdir -p "$TARGET"
+sudo chown claude:claude "$TARGET"
 
 # Atomic symlink: create temp, then rename
 ln -sfn "$TARGET" "$TEMP"
