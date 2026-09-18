@@ -43,9 +43,28 @@ Delete the volume, delete everything. Move it to another machine, your context c
 
 ## Prerequisites
 
+### macOS
 - **macOS** — uses encrypted sparse images via `hdiutil`
 - **Docker Desktop** — runs the containerized environment
 - **Go 1.21+** — builds the CLI
+
+### Linux (Debian/Ubuntu)
+- **Docker Engine** — runs the containerized environment
+- **cryptsetup** — manages LUKS encrypted volumes
+- **Go 1.21+** — builds the CLI
+- **sudo access** — required for LUKS mount/unmount operations
+
+```bash
+# Install dependencies
+sudo apt-get install -y cryptsetup docker.io
+```
+
+> **sudo note:** `bootstrap`, `start`, `unlock`, and `lock` invoke `sudo` internally
+> for `cryptsetup` and `mount`. Either respond to the sudo password prompt, or add
+> passwordless sudo for those commands:
+> ```
+> username ALL=(ALL) NOPASSWD: /usr/sbin/cryptsetup, /bin/mount, /bin/umount, /sbin/mkfs.ext4
+> ```
 
 ## Quick Start
 
@@ -141,9 +160,9 @@ Unmounts the encrypted volume, securing your credentials. Next `start` requires 
 
 Capsule checks for volumes in this order:
 
-1. **Explicit path** — `--volume /path/to/volume.sparseimage`
-2. **Local volume** — `./capsule.sparseimage` (if exists)
-3. **Global volume** — `~/.capsule/volumes/capsule.sparseimage` (default)
+1. **Explicit path** — `--volume /path/to/volume.sparseimage` (macOS) / `--volume /path/to/volume.luks` (Linux)
+2. **Local volume** — `./capsule.sparseimage` or `./capsule.luks` (if exists)
+3. **Global volume** — `~/.capsule/volumes/capsule.sparseimage` (macOS) / `~/.capsule/volumes/capsule.luks` (Linux) — default
 
 Global storage (recommended) lets you access the same credentials from any project directory.
 
@@ -252,7 +271,7 @@ Update Claude Code: `claude-upgrade`
 | Explicit mounts | Only `/workspace` and `/claude-env` visible |
 | No host networking | Isolated network namespace |
 | Resource bounds | `--memory`, `--pids-limit` cap host RAM/PID exhaustion (defaults 8g / 512; configurable) |
-| Encrypted volume | AES-256 encryption at rest |
+| Encrypted volume | AES-256 encryption at rest (APFS on macOS, LUKS2 on Linux) |
 
 **Protected:** Host system, SSH keys, other projects, credentials at rest
 
@@ -292,6 +311,37 @@ Docker's VirtioFS cache has stale entries. Lock and restart:
 ```bash
 capsule lock
 capsule start
+```
+
+### Linux: "sudo: cryptsetup: command not found"
+
+Install cryptsetup:
+```bash
+sudo apt-get install -y cryptsetup
+```
+
+### Linux: "failed to open LUKS volume"
+
+Wrong password, or the volume file is corrupt. If bootstrapping fresh, delete the partial file and retry:
+```bash
+rm ~/.capsule/volumes/capsule.luks
+capsule bootstrap
+```
+
+### Linux: volume mounted but Docker can't see it
+
+Ensure Docker Engine (not just the CLI) is running:
+```bash
+sudo systemctl start docker
+sudo systemctl enable docker  # start on boot
+```
+
+### Linux: stale /dev/mapper entry after a crash
+
+If the container or system crashed while the volume was mounted, clean up manually:
+```bash
+sudo umount /tmp/capsule-*
+sudo cryptsetup luksClose capsule-<hash>   # hash shown in 'capsule status'
 ```
 
 ## Development
