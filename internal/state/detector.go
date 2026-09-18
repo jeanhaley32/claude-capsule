@@ -77,7 +77,7 @@ func (d *Detector) Detect() *EnvironmentState {
 // platformMountPointPrefix returns the OS-appropriate mount point prefix.
 func platformMountPointPrefix() string {
 	if runtime.GOOS == "linux" {
-		return volume.LinuxMountPointPrefix // "/tmp/capsule-"
+		return volume.LinuxMountPrefix() // e.g. ~/.capsule/mounts/capsule-
 	}
 	return volume.MountPointPrefix // "/Volumes/Capsule-"
 }

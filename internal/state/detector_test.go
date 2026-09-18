@@ -14,8 +14,10 @@ func TestCheckVolumeMounted_UsesCorrectPrefix(t *testing.T) {
 	entryPrefix := filepath.Base(prefix)
 
 	if runtime.GOOS == "linux" {
-		if mountDir != "/tmp" {
-			t.Errorf("mount directory = %q, want /tmp", mountDir)
+		home, _ := os.UserHomeDir()
+		wantDir := filepath.Join(home, ".capsule", "mounts")
+		if mountDir != wantDir {
+			t.Errorf("mount directory = %q, want %q", mountDir, wantDir)
 		}
 		if entryPrefix != "capsule-" {
 			t.Errorf("mount prefix = %q, want capsule-", entryPrefix)

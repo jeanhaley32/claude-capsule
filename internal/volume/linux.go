@@ -16,9 +16,17 @@ import (
 	"github.com/jeanhaley32/claude-capsule/internal/terminal"
 )
 
-// LinuxMountPointPrefix is the prefix for mount points under /tmp.
-// Exported so the state detector can use it instead of hardcoding paths.
-const LinuxMountPointPrefix = "/tmp/capsule-"
+// LinuxMountPrefix returns the directory prefix used for LUKS mount points.
+// Mounts live under ~/.capsule/mounts/ to keep them private and alongside
+// the volume files, rather than in the world-readable /tmp.
+// Exported so the state detector can use it without hardcoding paths.
+func LinuxMountPrefix() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+	}
+	return filepath.Join(home, constants.CapsuleConfigDir, "mounts", "capsule-")
+}
 
 // linuxVolumeOperationTimeout is the timeout for LUKS operations (cryptsetup can
 // take a few seconds on format, especially on slower disks).
@@ -183,8 +191,8 @@ func (m *LinuxVolumeManager) Unmount(mountPoint string) error {
 
 	// Derive the mapper name from the mount point suffix (last 12 hex chars after prefix)
 	mapperName := ""
-	if strings.HasPrefix(mountPoint, LinuxMountPointPrefix) {
-		shortHash := strings.TrimPrefix(mountPoint, LinuxMountPointPrefix)
+	if strings.HasPrefix(mountPoint, LinuxMountPrefix()) {
+		shortHash := strings.TrimPrefix(mountPoint, LinuxMountPrefix())
 		mapperName = "capsule-" + shortHash
 	}
 
@@ -234,7 +242,7 @@ func (m *LinuxVolumeManager) generateMapperName(volumePath string) string {
 
 // generateMountPoint returns the expected mount point path for a volume.
 func (m *LinuxVolumeManager) generateMountPoint(volumePath string) string {
-	return LinuxMountPointPrefix + volumePathHash(volumePath)
+	return LinuxMountPrefix() + volumePathHash(volumePath)
 }
 
 // unmountAndClose runs umount followed by cryptsetup luksClose.
@@ -249,7 +257,7 @@ func (m *LinuxVolumeManager) unmountAndClose(mountPoint, mapperName string) erro
 	}
 
 	// Remove the mount point directory we created
-	if strings.HasPrefix(mountPoint, LinuxMountPointPrefix) {
+	if strings.HasPrefix(mountPoint, LinuxMountPrefix()) {
 		os.Remove(mountPoint)
 	}
 
