@@ -101,11 +101,11 @@ func (m *LinuxVolumeManager) Bootstrap(cfg BootstrapConfig) error {
 		return fmt.Errorf("failed to mount volume: %w", err)
 	}
 
-	// 6. Fix ownership so the calling user can write without sudo
-	uid := fmt.Sprintf("%d", os.Getuid())
-	gid := fmt.Sprintf("%d", os.Getgid())
-	if err := runCmd(30*time.Second, nil, "sudo", "chown", "-R", uid+":"+gid, mountPoint); err != nil {
-		// Non-fatal: user may still be able to write if running as root
+	// 6. Fix ownership to match the container's claude user (UID/GID 1000).
+	// The Dockerfile creates claude with useradd (no -u flag), which assigns
+	// UID 1000 on any fresh Debian-based image. The host user's UID may differ,
+	// so we target 1000:1000 directly rather than using os.Getuid().
+	if err := runCmd(30*time.Second, nil, "sudo", "chown", "-R", "1000:1000", mountPoint); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to fix volume ownership: %v\n", err)
 	}
 
