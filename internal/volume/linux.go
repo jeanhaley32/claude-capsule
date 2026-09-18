@@ -109,16 +109,17 @@ func (m *LinuxVolumeManager) Bootstrap(cfg BootstrapConfig) error {
 		return fmt.Errorf("failed to mount volume: %w", err)
 	}
 
-	// 6a. Chown to the host user so createVolumeDirectories can write files.
-	// The freshly-formatted ext4 root is owned by root; the host process runs
-	// as an unprivileged user and cannot write there without this step.
+	// 6. Chown the volume to the host user. The freshly-formatted ext4 root is
+	// owned by root. The image is built with HOST_UID/HOST_GID matching this
+	// user, so a single chown is sufficient for both host writes and container
+	// access — no second pass to UID 1000 is needed.
 	hostOwner := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	if err := runCmd(30*time.Second, nil, "sudo", "chown", "-R", hostOwner, mountPoint); err != nil {
 		_ = runCmd(30*time.Second, nil, "sudo", "umount", mountPoint)
 		_ = runCmd(30*time.Second, nil, "sudo", "cryptsetup", "luksClose", mapperName)
 		os.Remove(mountPoint)
 		os.Remove(volumePath)
-		return fmt.Errorf("failed to set volume ownership for bootstrap: %w", err)
+		return fmt.Errorf("failed to set volume ownership: %w", err)
 	}
 
 	// 7. Create directory structure and config files (shared with macOS)
@@ -128,14 +129,6 @@ func (m *LinuxVolumeManager) Bootstrap(cfg BootstrapConfig) error {
 		os.Remove(mountPoint)
 		os.Remove(volumePath)
 		return fmt.Errorf("failed to create directory structure: %w", err)
-	}
-
-	// 6b. Now re-chown to the container's claude user (UID/GID 1000). The
-	// Dockerfile creates claude with useradd (no -u flag), which assigns UID
-	// 1000 on any fresh Debian-based image. This must happen after directory
-	// creation so the container user can write to /claude-env at runtime.
-	if err := runCmd(30*time.Second, nil, "sudo", "chown", "-R", "1000:1000", mountPoint); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to set container ownership: %v\n", err)
 	}
 
 	// 8. Unmount and close
