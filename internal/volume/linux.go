@@ -101,12 +101,16 @@ func (m *LinuxVolumeManager) Bootstrap(cfg BootstrapConfig) error {
 		return fmt.Errorf("failed to mount volume: %w", err)
 	}
 
-	// 6. Fix ownership to match the container's claude user (UID/GID 1000).
-	// The Dockerfile creates claude with useradd (no -u flag), which assigns
-	// UID 1000 on any fresh Debian-based image. The host user's UID may differ,
-	// so we target 1000:1000 directly rather than using os.Getuid().
-	if err := runCmd(30*time.Second, nil, "sudo", "chown", "-R", "1000:1000", mountPoint); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to fix volume ownership: %v\n", err)
+	// 6a. Chown to the host user so createVolumeDirectories can write files.
+	// The freshly-formatted ext4 root is owned by root; the host process runs
+	// as an unprivileged user and cannot write there without this step.
+	hostOwner := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	if err := runCmd(30*time.Second, nil, "sudo", "chown", "-R", hostOwner, mountPoint); err != nil {
+		_ = runCmd(30*time.Second, nil, "sudo", "umount", mountPoint)
+		_ = runCmd(30*time.Second, nil, "sudo", "cryptsetup", "luksClose", mapperName)
+		os.Remove(mountPoint)
+		os.Remove(volumePath)
+		return fmt.Errorf("failed to set volume ownership for bootstrap: %w", err)
 	}
 
 	// 7. Create directory structure and config files (shared with macOS)
@@ -116,6 +120,14 @@ func (m *LinuxVolumeManager) Bootstrap(cfg BootstrapConfig) error {
 		os.Remove(mountPoint)
 		os.Remove(volumePath)
 		return fmt.Errorf("failed to create directory structure: %w", err)
+	}
+
+	// 6b. Now re-chown to the container's claude user (UID/GID 1000). The
+	// Dockerfile creates claude with useradd (no -u flag), which assigns UID
+	// 1000 on any fresh Debian-based image. This must happen after directory
+	// creation so the container user can write to /claude-env at runtime.
+	if err := runCmd(30*time.Second, nil, "sudo", "chown", "-R", "1000:1000", mountPoint); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to set container ownership: %v\n", err)
 	}
 
 	// 8. Unmount and close
