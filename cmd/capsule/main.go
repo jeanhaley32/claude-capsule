@@ -475,6 +475,12 @@ func ensureVolumeMounted(vm volume.VolumeManager, volumePath string) (string, *t
 		return existingMount, nil, nil
 	}
 
+	// Name the volume before asking for the password. A local
+	// ./capsule.sparseimage outranks the global one, so a repository that ships
+	// a file with that name would otherwise receive the user's real passphrase
+	// at a prompt that looks identical to the usual one.
+	announceVolumeTarget(volumePath)
+
 	password, err := terminal.ReadPasswordSecure("Enter volume password: ")
 	if err != nil {
 		return "", nil, fmt.Errorf("password error: %w", err)
@@ -489,6 +495,24 @@ func ensureVolumeMounted(vm volume.VolumeManager, volumePath string) (string, *t
 	fmt.Fprintf(os.Stderr, "Volume mounted at %s\n", mountPoint)
 
 	return mountPoint, password, nil
+}
+
+// announceVolumeTarget tells the user which image is about to be unlocked, and
+// calls out the case where it was picked up from the working directory rather
+// than the global store — the only case where an untrusted file can end up
+// receiving the passphrase.
+func announceVolumeTarget(volumePath string) {
+	fmt.Fprintf(os.Stderr, "Volume: %s\n", volumePath)
+
+	resolver, err := volume.NewPathResolver()
+	if err != nil {
+		return // can't classify it; naming the path is still the useful part
+	}
+	if volumePath == resolver.GetDefaultVolumePath() {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "  NOTE: this image is not your global volume "+
+		"(~/.capsule/volumes). If you did not create it, do not enter your passphrase.")
 }
 
 // prepareMountCache clears Docker Desktop's VM cache and refreshes its VirtioFS

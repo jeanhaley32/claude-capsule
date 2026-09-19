@@ -168,3 +168,28 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+// A local ./capsule.sparseimage outranks the global volume, which is what lets
+// a repository that ships a file with that name receive the user's passphrase.
+// The resolution itself is intentional; this pins the behaviour so the CLI can
+// reliably tell a local hit apart from the global default and warn about it.
+func TestPathResolver_LocalVolumeOutranksGlobal(t *testing.T) {
+	cwd := t.TempDir()
+	localPath := filepath.Join(cwd, constants.MacOSVolumeFile)
+	if err := os.WriteFile(localPath, []byte("not a real image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &PathResolver{homeDir: t.TempDir()}
+	got, exists := p.ResolveVolumePath("", cwd)
+
+	if !exists {
+		t.Fatal("expected the local volume to be reported as existing")
+	}
+	if got != localPath {
+		t.Fatalf("got %q, want the local volume %q", got, localPath)
+	}
+	if got == p.GetDefaultVolumePath() {
+		t.Fatal("local hit must be distinguishable from the global default")
+	}
+}
