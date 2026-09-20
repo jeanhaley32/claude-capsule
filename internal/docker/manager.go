@@ -293,12 +293,9 @@ func (m *Manager) checkDockerRunning() error {
 	return nil
 }
 
-// CheckTmpFileSharing verifies Docker Desktop is running and can access file mounts.
-// We mount encrypted volumes to /Volumes via hdiutil, which has system entitlements.
+// CheckTmpFileSharing verifies Docker is running and can access host file mounts.
+// Tests /tmp access as a basic sanity check that bind mounts are working.
 func (m *Manager) CheckTmpFileSharing() error {
-	// Just verify Docker is running and can do basic file mounts
-	// We can't test /Volumes directly (protected by macOS), but hdiutil can mount there
-	// Test with /tmp to verify Docker's file sharing is working in general
 	ctx, cancel := context.WithTimeout(context.Background(), quickCommandTimeout)
 	defer cancel()
 
@@ -308,18 +305,17 @@ func (m *Manager) CheckTmpFileSharing() error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf(`Docker cannot access host filesystem for file sharing.
+		return fmt.Errorf(`Docker cannot access the host filesystem for bind mounts.
 
-Please ensure Docker Desktop is running and file sharing is enabled:
-  1. Open Docker Desktop
-  2. Go to Settings (gear icon) → Resources → File sharing
-  3. Verify file sharing is enabled
-  4. Click "Apply & Restart" if you make changes
+On macOS/Windows — ensure Docker Desktop is running with file sharing enabled:
+  Settings → Resources → File Sharing → verify path is included → Apply & Restart
+
+On Linux — ensure the Docker daemon is running:
+  sudo systemctl start docker
 
 Error: %s`, strings.TrimSpace(string(output)))
 	}
 
-	// If we got output, the mount worked
 	_ = output
 	return nil
 }

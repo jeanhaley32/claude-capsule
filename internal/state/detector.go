@@ -1,10 +1,12 @@
 package state
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -72,28 +74,66 @@ func (d *Detector) Detect() *EnvironmentState {
 	return state
 }
 
-// checkVolumeMounted checks if the ClaudeEnv volume is mounted.
-// Uses volume.MountPointPrefix to stay consistent with volume/macos.go.
+// platformMountPointPrefix returns the OS-appropriate mount point prefix.
+func platformMountPointPrefix() string {
+	if runtime.GOOS == "linux" {
+		return volume.LinuxMountPrefix() // e.g. ~/.capsule/mounts/capsule-
+	}
+	return volume.MountPointPrefix // "/Volumes/Capsule-"
+}
+
+// checkVolumeMounted checks if any capsule volume is currently mounted.
+// On macOS it scans /Volumes for Capsule-* directories.
+// On Linux it scans /tmp for capsule-* directories and verifies against /proc/mounts.
 func (d *Detector) checkVolumeMounted() (string, bool) {
-	// Mount points live under /Volumes with prefix "Capsule-"
-	mountDir := filepath.Dir(volume.MountPointPrefix)           // "/Volumes"
-	prefix := filepath.Base(volume.MountPointPrefix)             // "Capsule-"
+	prefix := platformMountPointPrefix()
+	mountDir := filepath.Dir(prefix)   // "/Volumes" or "/tmp"
+	entryPrefix := filepath.Base(prefix) // "Capsule-" or "capsule-"
 
 	entries, err := os.ReadDir(mountDir)
-	if err == nil {
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), prefix) && entry.IsDir() {
-				mountPoint := filepath.Join(mountDir, entry.Name())
-				// Verify it's actually mounted by checking for content
-				contents, err := os.ReadDir(mountPoint)
-				if err == nil && len(contents) > 0 {
-					return mountPoint, true
-				}
+	if err != nil {
+		return "", false
+	}
+
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), entryPrefix) || !entry.IsDir() {
+			continue
+		}
+		mountPoint := filepath.Join(mountDir, entry.Name())
+
+		if runtime.GOOS == "linux" {
+			// On Linux, verify the directory is an active mount by checking /proc/mounts
+			if isMountedLinux(mountPoint) {
+				return mountPoint, true
+			}
+		} else {
+			// On macOS, non-empty directory means it's mounted
+			contents, err := os.ReadDir(mountPoint)
+			if err == nil && len(contents) > 0 {
+				return mountPoint, true
 			}
 		}
 	}
 
 	return "", false
+}
+
+// isMountedLinux checks whether the given path appears as a mount point in /proc/mounts.
+func isMountedLinux(path string) bool {
+	f, err := os.Open("/proc/mounts")
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) >= 2 && fields[1] == path {
+			return true
+		}
+	}
+	return false
 }
 
 // checkContainer checks if the container exists and is running.

@@ -82,7 +82,7 @@ func (m *MacOSVolumeManager) Bootstrap(cfg BootstrapConfig) error {
 	}
 
 	// Create directory structure
-	if err := m.createDirectoryStructure(mountPoint, cfg); err != nil {
+	if err := createVolumeDirectories(mountPoint, cfg); err != nil {
 		// Try to unmount even if directory creation fails
 		_ = m.Unmount(mountPoint)
 		return fmt.Errorf("failed to create directory structure: %w", err)
@@ -196,8 +196,9 @@ func (m *MacOSVolumeManager) Exists(volumePath string) bool {
 	return err == nil
 }
 
-// createDirectoryStructure creates the required directories inside the mounted volume.
-func (m *MacOSVolumeManager) createDirectoryStructure(mountPoint string, cfg BootstrapConfig) error {
+// createVolumeDirectories creates the required directories and config files inside a
+// freshly-formatted mounted volume. Called by both MacOSVolumeManager and LinuxVolumeManager.
+func createVolumeDirectories(mountPoint string, cfg BootstrapConfig) error {
 	for _, dir := range config.VolumeStructure {
 		path := filepath.Join(mountPoint, dir)
 		if err := os.MkdirAll(path, constants.DirPermissions); err != nil {

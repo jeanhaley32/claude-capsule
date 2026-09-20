@@ -3,21 +3,32 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
-
-	"github.com/jeanhaley32/claude-capsule/internal/volume"
 )
 
 func TestCheckVolumeMounted_UsesCorrectPrefix(t *testing.T) {
-	// Verify the detector scans the correct directory (derived from volume.MountPointPrefix)
-	mountDir := filepath.Dir(volume.MountPointPrefix)
-	prefix := filepath.Base(volume.MountPointPrefix)
+	// Verify the detector uses the OS-appropriate mount point prefix.
+	prefix := platformMountPointPrefix()
+	mountDir := filepath.Dir(prefix)
+	entryPrefix := filepath.Base(prefix)
 
-	if mountDir != "/Volumes" {
-		t.Errorf("mount directory = %q, want /Volumes", mountDir)
-	}
-	if prefix != "Capsule-" {
-		t.Errorf("mount prefix = %q, want Capsule-", prefix)
+	if runtime.GOOS == "linux" {
+		home, _ := os.UserHomeDir()
+		wantDir := filepath.Join(home, ".capsule", "mounts")
+		if mountDir != wantDir {
+			t.Errorf("mount directory = %q, want %q", mountDir, wantDir)
+		}
+		if entryPrefix != "capsule-" {
+			t.Errorf("mount prefix = %q, want capsule-", entryPrefix)
+		}
+	} else {
+		if mountDir != "/Volumes" {
+			t.Errorf("mount directory = %q, want /Volumes", mountDir)
+		}
+		if entryPrefix != "Capsule-" {
+			t.Errorf("mount prefix = %q, want Capsule-", entryPrefix)
+		}
 	}
 }
 

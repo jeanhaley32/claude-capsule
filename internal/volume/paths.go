@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/jeanhaley32/claude-capsule/internal/constants"
 )
@@ -28,16 +29,26 @@ func (p *PathResolver) GetGlobalVolumeDir() string {
 	return filepath.Join(p.homeDir, constants.CapsuleConfigDir, constants.VolumesSubdir)
 }
 
+// VolumeFileName returns the platform-appropriate encrypted volume filename.
+func VolumeFileName() string {
+	switch runtime.GOOS {
+	case "linux":
+		return constants.LinuxVolumeFile
+	default:
+		return constants.MacOSVolumeFile
+	}
+}
+
 // GetDefaultVolumePath returns the default global volume path.
-// Returns: ~/.capsule/volumes/capsule.sparseimage
+// Returns: ~/.capsule/volumes/capsule.sparseimage (macOS) or capsule.luks (Linux)
 func (p *PathResolver) GetDefaultVolumePath() string {
-	return filepath.Join(p.GetGlobalVolumeDir(), constants.MacOSVolumeFile)
+	return filepath.Join(p.GetGlobalVolumeDir(), VolumeFileName())
 }
 
 // GetLocalVolumePath returns the local volume path for a given directory.
-// Returns: {dir}/capsule.sparseimage
+// Returns: {dir}/capsule.sparseimage (macOS) or {dir}/capsule.luks (Linux)
 func (p *PathResolver) GetLocalVolumePath(dir string) string {
-	return filepath.Join(dir, constants.MacOSVolumeFile)
+	return filepath.Join(dir, VolumeFileName())
 }
 
 // ResolveVolumePath applies the volume resolution priority rules.

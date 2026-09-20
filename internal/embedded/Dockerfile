@@ -1,6 +1,13 @@
+# syntax=docker/dockerfile:1
 FROM node:20-slim
 
 ARG TARGETARCH
+# HOST_UID/HOST_GID match the calling user on Linux so bind-mounted directories
+# (/workspace, /claude-env) have consistent ownership without UID remapping.
+# Defaults to 1000 (correct for most single-user Linux systems and macOS via
+# Docker Desktop's transparent UID mapping).
+ARG HOST_UID=1000
+ARG HOST_GID=1000
 
 LABEL maintainer="jeanhaley32"
 LABEL description="Claude Capsule workspace environment"
@@ -78,10 +85,21 @@ RUN curl -fLo /tmp/beads.tar.gz \
     && chmod +x /usr/local/bin/bd \
     && rm /tmp/beads.tar.gz
 
-# Create non-root user with sudo access
-RUN useradd -m -s /usr/bin/fish claude && \
-    mkdir -p /claude-env /workspace && \
-    chown -R claude:claude /claude-env /workspace && \
+# Create non-root user with the host UID/GID so bind mounts are writable.
+# groupadd/usermod handle the case where GID or UID 1000 already exists
+# (node:20-slim ships with a 'node' user at UID 1000).
+RUN if getent group ${HOST_GID} > /dev/null 2>&1; then \
+        groupmod -n claude $(getent group ${HOST_GID} | cut -d: -f1); \
+    else \
+        groupadd -g ${HOST_GID} claude; \
+    fi && \
+    if getent passwd ${HOST_UID} > /dev/null 2>&1; then \
+        usermod -l claude -d /home/claude -s /usr/bin/fish $(getent passwd ${HOST_UID} | cut -d: -f1); \
+    else \
+        useradd -m -u ${HOST_UID} -g ${HOST_GID} -s /usr/bin/fish claude; \
+    fi && \
+    mkdir -p /home/claude /claude-env /workspace && \
+    chown -R claude:claude /home/claude /claude-env /workspace && \
     echo "claude ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/claude
 
 # Global gitignore: ensure .beads never leaks into any repo
@@ -106,7 +124,7 @@ TARGET="/claude-env/repos/${REPO_ID}"
 LINK="/workspace/_docs"
 TEMP="${LINK}.tmp.$$"
 
-# Ensure target directory exists
+# Ensure target directory exists.
 mkdir -p "$TARGET"
 
 # Atomic symlink: create temp, then rename
