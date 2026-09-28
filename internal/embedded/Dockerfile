@@ -1,4 +1,29 @@
 # syntax=docker/dockerfile:1
+
+# ── bd (beads) build stage ────────────────────────────────────────────────────
+# The pre-built release binary links against libicui18n.so.74, which is not in
+# Debian Bookworm's apt repos (Bookworm ships libicu72).  Build from source via
+# `go install` so the binary links against whatever ICU version the base OS
+# provides.
+#
+# --platform=$TARGETPLATFORM ensures the correct arch is built whether the host
+# is macOS (arm64 or amd64) or Linux (amd64).  BuildKit uses QEMU emulation
+# when TARGETPLATFORM ≠ BUILDPLATFORM, keeping CGO working without a
+# cross-compiler toolchain.
+FROM golang:1.25-bookworm AS bd-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libicu-dev \
+    && rm -rf /var/lib/apt/lists/*
+# go install won't work: the fork's go.mod still declares the upstream module
+# path (github.com/steveyegge/beads), so go rejects the path mismatch.
+# Clone and build directly instead.
+RUN git clone --depth=1 --branch v0.55.4 \
+        https://github.com/jeanhaley32/beads /tmp/beads \
+    && cd /tmp/beads \
+    && CGO_ENABLED=1 go build -o /go/bin/bd ./cmd/bd \
+    && rm -rf /tmp/beads
+
+# ── main image ────────────────────────────────────────────────────────────────
 FROM node:20-slim
 
 ARG TARGETARCH
@@ -28,6 +53,7 @@ RUN apt-get update && apt-get install -y \
     fd-find \
     bat \
     fzf \
+    libicu72 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true
@@ -78,12 +104,10 @@ RUN curl -sS https://starship.rs/install.sh | sh -s -- -y
 # Install Claude Code CLI (pin version for reproducible builds)
 RUN npm install -g @anthropic-ai/claude-code@2.1.104
 
-# Install Beads issue tracker (vendored binary from jeanhaley32/beads fork)
-RUN curl -fLo /tmp/beads.tar.gz \
-    "https://github.com/jeanhaley32/beads/releases/download/v0.55.4/beads_0.55.4_linux_${TARGETARCH}.tar.gz" \
-    && tar xzf /tmp/beads.tar.gz -C /usr/local/bin/ bd \
-    && chmod +x /usr/local/bin/bd \
-    && rm /tmp/beads.tar.gz
+# Install Beads issue tracker — copy the binary produced by the bd-builder stage
+# above (COPY --from copies from that Docker build stage, not the local host).
+# libicu72 (added to the apt step above) is the runtime shared library it links against.
+COPY --from=bd-builder /go/bin/bd /usr/local/bin/bd
 
 # Create non-root user with the host UID/GID so bind mounts are writable.
 # groupadd/usermod handle the case where GID or UID 1000 already exists
