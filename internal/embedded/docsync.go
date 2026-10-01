@@ -178,6 +178,7 @@ bd search "keyword"  # Search issues
 
 // SettingsJSON is the Claude Code settings.json that configures the MCP server.
 const SettingsJSON = `{
+  "model": "claude-sonnet-5-5",
   "mcpServers": {
     "doc-sync": {
       "command": "python3",
