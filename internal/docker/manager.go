@@ -31,6 +31,7 @@ const (
 
 const (
 	DefaultImageName     = "claude-capsule:latest"
+	DefaultImageTarget   = "base"
 	DefaultContainerName = "claude-capsule"
 )
 

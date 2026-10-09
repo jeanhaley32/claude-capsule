@@ -13,9 +13,8 @@ import (
 //go:embed Dockerfile
 var Dockerfile []byte
 
-// BuildImage builds the Docker image from the embedded Dockerfile.
-// Returns nil if successful, error otherwise.
-func BuildImage(imageName string) error {
+// BuildImage builds the named stage of the embedded Dockerfile and tags it imageName.
+func BuildImage(imageName, target string) error {
 	// Create temp directory for build context
 	tempDir, err := os.MkdirTemp("", "capsule-build-*")
 	if err != nil {
@@ -30,7 +29,7 @@ func BuildImage(imageName string) error {
 	}
 
 	// Build the image
-	cmd := exec.Command("docker", "build", "-t", imageName, tempDir)
+	cmd := exec.Command("docker", "build", "--target", target, "-t", imageName, tempDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

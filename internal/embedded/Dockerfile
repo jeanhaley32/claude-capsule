@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:20-slim AS base
 
 ARG TARGETARCH
 
@@ -225,4 +225,111 @@ ENV BEADS_AUTO_START_DAEMON=false
 ENV SHELL=/usr/bin/fish
 
 # Entry point
+ENTRYPOINT ["/usr/bin/fish"]
+
+# ============================================================================
+# rodin: base + agent-relay + vessel-writer baked in.
+# Built only when targeted: `capsule build-image --target rodin`.
+# ============================================================================
+FROM golang:1.25-bookworm AS rodin-build
+
+ARG RELAY_REF=main
+ARG WRITER_REF=master
+
+RUN git clone --depth 1 --branch "$RELAY_REF" https://github.com/jeanhaley32/agent-relay /src/agent-relay \
+    && cd /src/agent-relay \
+    && go build -o /out/relayd ./cmd/relayd \
+    && go build -o /out/relay-shim ./cmd/relay-shim \
+    && go build -o /out/apply-security ./cmd/apply-security
+
+RUN git clone --depth 1 --branch "$WRITER_REF" https://github.com/jeanhaley32/vessel-writer /src/vessel-writer \
+    && cd /src/vessel-writer \
+    && go build -o /out/writer-mcp ./cmd/writer-mcp
+
+FROM base AS rodin
+
+USER root
+
+# relayd refuses to start without a tailnet address
+RUN curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg \
+        -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian bookworm main" \
+        > /etc/apt/sources.list.d/tailscale.list \
+    && apt-get update && apt-get install -y tailscale \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=rodin-build /out/ /usr/local/bin/
+COPY --from=rodin-build --chown=claude:claude /src/agent-relay /opt/rodin/agent-relay
+COPY --from=rodin-build --chown=claude:claude /src/vessel-writer /opt/rodin/vessel-writer
+
+ENV UV_PYTHON_DOWNLOADS=never
+RUN uv venv --python /usr/bin/python3 /opt/rodin/vessel-writer/.venv \
+    && uv pip install --python /opt/rodin/vessel-writer/.venv/bin/python \
+        -r /opt/rodin/vessel-writer/requirements.txt \
+    && chown -R claude:claude /opt/rodin/vessel-writer/.venv
+
+RUN cat > /usr/local/bin/rodin-up << 'SCRIPT'
+#!/bin/bash
+# Bring up the rodin stack inside the container: tailscaled, vessel-writer, relayd.
+# All mutable state lives on the encrypted volume so it survives container rebuilds.
+set -euo pipefail
+
+STATE=/claude-env/rodin
+RELAY_DIR="$STATE/agent-relay"
+WRITER_ROOT="$STATE/writing"
+SOCK="${RELAY_SOCKET:-/tmp/agent-relay.sock}"
+WRITER_PORT="${WRITER_PORT:-8791}"
+mkdir -p "$RELAY_DIR" "$WRITER_ROOT"
+
+# No /dev/net/tun in the container, so tailscaled runs in userspace mode.
+if ! pgrep -x tailscaled >/dev/null; then
+    sudo mkdir -p /var/run/tailscale
+    sudo nohup tailscaled --tun=userspace-networking --state="$STATE/tailscaled.state" \
+        >"$STATE/tailscaled.log" 2>&1 &
+    sleep 2
+fi
+if ! tailscale ip -4 >/dev/null 2>&1; then
+    echo "Tailscale is not connected yet. Run:  sudo tailscale up" >&2
+    echo "then re-run rodin-up." >&2
+    exit 1
+fi
+
+if [ ! -f "$RELAY_DIR/config.json" ]; then
+    cp /opt/rodin/agent-relay/config.example.json "$RELAY_DIR/config.json"
+    echo "Wrote $RELAY_DIR/config.json — set your admin ids, put bot tokens in $RELAY_DIR/.env, then re-run rodin-up." >&2
+    exit 1
+fi
+
+cat > "$STATE/mcp.json" << JSON
+{
+  "mcpServers": {
+    "relay":  { "command": "/usr/local/bin/relay-shim", "args": ["--socket", "$SOCK"] },
+    "writer": { "command": "/usr/local/bin/writer-mcp", "args": ["-base", "http://127.0.0.1:$WRITER_PORT"] }
+  }
+}
+JSON
+
+if ! tmux has-session -t rodin 2>/dev/null; then
+    tmux new-session -d -s rodin -n writer -c /opt/rodin/vessel-writer \
+        "WRITER_ROOT=$WRITER_ROOT WRITER_PORT=$WRITER_PORT ./run.sh"
+fi
+if ! tmux list-windows -t rodin -F '#W' | grep -qx relayd; then
+    rm -f "$SOCK"
+    tmux new-window -t rodin -n relayd -c "$RELAY_DIR" \
+        "set -a; [ -f .env ] && . ./.env; set +a; relayd --config config.json"
+fi
+
+cat << EOT
+rodin is up
+  writer   http://127.0.0.1:$WRITER_PORT   (tmux rodin:writer)
+  relayd   $SOCK   (tmux rodin:relayd)
+
+Start Claude with the relay channel and the writer tools:
+  claude --mcp-config $STATE/mcp.json --dangerously-load-development-channels server:relay
+EOT
+SCRIPT
+RUN chmod +x /usr/local/bin/rodin-up
+
+USER claude
+WORKDIR /workspace
 ENTRYPOINT ["/usr/bin/fish"]

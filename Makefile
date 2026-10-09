@@ -2,7 +2,7 @@ BINARY_NAME := capsule
 BUILD_DIR := .
 INSTALL_DIR := $(HOME)/.local/bin
 
-.PHONY: all build install uninstall clean docker help
+.PHONY: all build install uninstall clean docker docker-rodin help
 
 all: build
 
@@ -26,6 +26,10 @@ uninstall:
 docker: build
 	./$(BINARY_NAME) build-image --force
 
+## Build the rodin Docker image (base + agent-relay + vessel-writer)
+docker-rodin: build
+	./$(BINARY_NAME) build-image --force --target rodin
+
 ## Run tests
 test:
 	go test ./...
@@ -44,6 +48,7 @@ help:
 	@echo "  install    Build and install to ~/.local/bin"
 	@echo "  uninstall  Remove from ~/.local/bin"
 	@echo "  docker     Sync Dockerfile and rebuild Docker image"
+	@echo "  docker-rodin  Rebuild the rodin image (relay + writer baked in)"
 	@echo "  test       Run tests"
 	@echo "  clean      Remove build artifacts"
 	@echo "  help       Show this help"

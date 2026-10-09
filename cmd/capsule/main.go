@@ -121,6 +121,7 @@ func main() {
 		newUnlockCmd(),
 		newLockCmd(),
 		newStatusCmd(),
+		newRodinCmd(),
 		newBuildImageCmd(),
 		newVersionCmd(),
 	)
@@ -347,6 +348,7 @@ type resolvedTarget struct {
 	workspacePath string
 	repoID        string
 	containerName string
+	imageTarget   string
 }
 
 // resolveTarget resolves the volume path, workspace root, repo ID, and container
@@ -397,6 +399,7 @@ func resolveTarget(volumePathFlag, workspaceFlag string) (*resolvedTarget, error
 		workspacePath: workspacePath,
 		repoID:        repoID,
 		containerName: containerName,
+		imageTarget:   docker.DefaultImageTarget,
 	}, nil
 }
 
@@ -404,7 +407,9 @@ func newStartCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Mount volume and start container",
-		RunE:  runStart,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runStart(cmd, docker.DefaultImageTarget)
+		},
 	}
 
 	cmd.Flags().String("volume", "", "Path to encrypted volume (auto-detected if not specified)")
@@ -413,7 +418,34 @@ func newStartCmd() *cobra.Command {
 	return cmd
 }
 
-func runStart(cmd *cobra.Command, args []string) error {
+func newRodinCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "rodin",
+		Short: "Start a container from the rodin image (agent-relay + vessel-writer baked in)",
+		Long: `Like start, but uses the image built from the Dockerfile's "rodin" stage,
+which bundles agent-relay, vessel-writer, and Tailscale. Inside the container,
+run rodin-up to bring the stack online.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runStart(cmd, "rodin")
+		},
+	}
+
+	cmd.Flags().String("volume", "", "Path to encrypted volume (auto-detected if not specified)")
+	cmd.Flags().String("workspace", "", "Workspace path (defaults to current directory or git root)")
+
+	return cmd
+}
+
+// imageNameForTarget maps a Dockerfile stage to its local image tag. The base
+// stage keeps the historical :latest tag so existing installs keep working.
+func imageNameForTarget(target string) string {
+	if target == docker.DefaultImageTarget {
+		return docker.DefaultImageName
+	}
+	return "claude-capsule:" + target
+}
+
+func runStart(cmd *cobra.Command, imageTarget string) error {
 	volumePathFlag, err := cmd.Flags().GetString("volume")
 	if err != nil {
 		return fmt.Errorf("invalid volume flag: %w", err)
@@ -428,6 +460,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	target.imageTarget = imageTarget
 
 	// Create managers
 	volumeManager, err := volume.New()
@@ -461,10 +494,10 @@ func ensureContainerRunning(
 	volumeManager volume.VolumeManager,
 	target *resolvedTarget,
 ) (*docker.ContainerConfig, *terminal.SecurePassword, func(), error) {
-	// Check if Docker image exists, build if needed
-	if !embedded.ImageExists(docker.DefaultImageName) {
-		fmt.Fprintf(os.Stderr, "Docker image '%s' not found. Building...\n", docker.DefaultImageName)
-		if err := embedded.BuildImage(docker.DefaultImageName); err != nil {
+	imageName := imageNameForTarget(target.imageTarget)
+	if !embedded.ImageExists(imageName) {
+		fmt.Fprintf(os.Stderr, "Docker image '%s' not found. Building...\n", imageName)
+		if err := embedded.BuildImage(imageName, target.imageTarget); err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to build Docker image: %w", err)
 		}
 		fmt.Fprintln(os.Stderr, "Docker image built successfully!")
@@ -497,7 +530,7 @@ func ensureContainerRunning(
 
 	// Start container (with retry on VirtioFS cache conflicts)
 	containerConfig := &docker.ContainerConfig{
-		ImageName:        docker.DefaultImageName,
+		ImageName:        imageName,
 		ContainerName:    target.containerName,
 		VolumeMountPoint: mountPoint,
 		WorkspacePath:    target.workspacePath,
@@ -1102,6 +1135,7 @@ func newBuildImageCmd() *cobra.Command {
 	}
 
 	cmd.Flags().Bool("force", false, "Rebuild even if image already exists")
+	cmd.Flags().String("target", docker.DefaultImageTarget, "Dockerfile stage to build (base or rodin)")
 
 	return cmd
 }
@@ -1111,14 +1145,19 @@ func runBuildImage(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid force flag: %w", err)
 	}
+	target, err := cmd.Flags().GetString("target")
+	if err != nil {
+		return fmt.Errorf("invalid target flag: %w", err)
+	}
+	imageName := imageNameForTarget(target)
 
-	if !force && embedded.ImageExists(docker.DefaultImageName) {
-		fmt.Fprintf(os.Stderr, "Docker image '%s' already exists. Use --force to rebuild.\n", docker.DefaultImageName)
+	if !force && embedded.ImageExists(imageName) {
+		fmt.Fprintf(os.Stderr, "Docker image '%s' already exists. Use --force to rebuild.\n", imageName)
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "Building Docker image '%s'...\n", docker.DefaultImageName)
-	if err := embedded.BuildImage(docker.DefaultImageName); err != nil {
+	fmt.Fprintf(os.Stderr, "Building Docker image '%s'...\n", imageName)
+	if err := embedded.BuildImage(imageName, target); err != nil {
 		return fmt.Errorf("failed to build image: %w", err)
 	}
 
