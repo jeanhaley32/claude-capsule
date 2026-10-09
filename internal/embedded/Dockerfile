@@ -248,6 +248,7 @@ RUN git clone --depth 1 --branch "$WRITER_REF" https://github.com/jeanhaley32/ve
 
 FROM base AS rodin
 
+ARG TARGETARCH
 USER root
 
 # relayd refuses to start without a tailnet address
@@ -268,11 +269,19 @@ RUN uv venv --python /usr/bin/python3 /opt/rodin/vessel-writer/.venv \
         -r /opt/rodin/vessel-writer/requirements.txt \
     && chown -R claude:claude /opt/rodin/vessel-writer/.venv
 
+# Continuwuity: single-binary Matrix homeserver (pin version for reproducible builds)
+RUN curl -fLo /usr/local/bin/continuwuity \
+        "https://forgejo.ellis.link/continuwuation/continuwuity/releases/download/v26.9.1/conduwuit-linux-static-${TARGETARCH}" \
+    && chmod 755 /usr/local/bin/continuwuity
+COPY rodin/continuwuity.toml.tmpl /opt/rodin/matrix/continuwuity.toml.tmpl
+
 COPY rodin/rodin-up.sh /usr/local/bin/rodin-up
+COPY rodin/rodin-matrix-setup.sh /usr/local/bin/rodin-matrix-setup
 # Managed CLAUDE.md: Claude Code reads it from this path on Linux, so the rodin
 # guide is present in every session without touching the shared volume's CLAUDE.md.
 COPY rodin/CLAUDE.md /etc/claude-code/CLAUDE.md
-RUN chmod 755 /usr/local/bin/rodin-up && chmod 644 /etc/claude-code/CLAUDE.md
+RUN chmod 755 /usr/local/bin/rodin-up /usr/local/bin/rodin-matrix-setup \
+    && chmod 644 /etc/claude-code/CLAUDE.md /opt/rodin/matrix/continuwuity.toml.tmpl
 
 USER claude
 WORKDIR /workspace

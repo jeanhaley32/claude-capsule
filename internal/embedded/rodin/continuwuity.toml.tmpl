@@ -1,0 +1,26 @@
+# Rodin's private Matrix homeserver. Reachable only over the tailnet, fronted
+# by `tailscale serve` for TLS. __SERVER_NAME__ is replaced by rodin-up with
+# this container's MagicDNS name; it cannot change once users exist.
+[global]
+server_name = "__SERVER_NAME__"
+database_path = "/claude-env/rodin/matrix/db"
+address = ["127.0.0.1"]
+port = 6167
+
+# Accounts are created only with the token in this file (rodin-matrix-setup).
+allow_registration = true
+registration_token_file = "/claude-env/rodin/matrix/registration_token"
+
+# Single-tenant and tailnet-only: no federation, no key notaries.
+allow_federation = false
+trusted_servers = []
+
+# The relay bot speaks plain Matrix with no E2EE, so encrypted rooms would
+# silently exclude it. Transport is already protected by the tailnet + TLS.
+allow_encryption = false
+
+new_user_displayname_suffix = ""
+log = "info"
+
+[global.well_known]
+client = "https://__SERVER_NAME__:8448"

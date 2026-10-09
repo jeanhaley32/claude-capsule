@@ -12,8 +12,10 @@ must come from them (account ids, bot tokens, a Tailscale login).
 |---|---|---|
 | **agent-relay** (`relayd`) | A daemon that connects chat apps (Telegram, Discord, Matrix, a browser pane) to a headless Claude Code session. Has an allowlist, rate limiting, and tool-approval prompts answered from chat. | binaries on PATH, source at `/opt/rodin/agent-relay` |
 | **vessel-writer** | A browser-based long-form markdown editor with live co-editing. The model reads documents and leaves comments through `writer-mcp`; it can never write to a document directly. | `/opt/rodin/vessel-writer`, serves on `127.0.0.1:8791` |
+| **Matrix homeserver** (`continuwuity`) | A private chat server for the user's own devices. Reachable only over the tailnet at `https://<this-container>.ts.net:8448`. The relay bot has an account on it, so the user can talk to Claude from Element on any of their tailnet devices. | `continuwuity`, config under `/claude-env/rodin/matrix/` |
 | **Tailscale** | Required by relayd, which binds its admin pages to this container's tailnet address. The container has a real tun device, so Tailscale runs normally. | `tailscale`, `tailscaled` |
-| **`rodin-up`** | One script that starts tailscaled, the writer, and relayd in a tmux session named `rodin`, and writes the MCP config Claude needs. Safe to re-run. | `/usr/local/bin/rodin-up` |
+| **`rodin-matrix-setup`** | Creates the user's Matrix account and the relay bot's account, stores the bot token, and enables the Matrix frontend in the relay config. One-time. | `/usr/local/bin/rodin-matrix-setup` |
+| **`rodin-up`** | One script that starts tailscaled, the writer, the Matrix homeserver, and relayd in a tmux session named `rodin`, and writes the MCP config Claude needs. Safe to re-run. | `/usr/local/bin/rodin-up` |
 
 ## Where state lives (all persistent)
 
@@ -29,6 +31,12 @@ a rebuilt image or a fresh container picks up exactly where the last one left of
 │   ├── security.yaml        what tools the relayed Claude session may use
 │   ├── allowlist.json       people approved via /handshake (created by relayd)
 │   └── *.json, *.jsonl      relayd's own state: contacts, device bindings, event log
+├── matrix/
+│   ├── server_name          the homeserver's name (= MagicDNS name); fixed once users exist
+│   ├── registration_token   secret that gates account creation (mode 600)
+│   ├── continuwuity.toml    generated from the template on every rodin-up
+│   ├── db/                  all accounts, rooms, messages, media
+│   └── media-spool/         inbound media the relay downloaded
 ├── tailscaled.state         this container's Tailscale identity and keys
 ├── writing/                 every document the writer has ever saved (blobs + index)
 ├── claude-workspace/        cwd for the relayed Claude session (holds its permission settings)
@@ -76,6 +84,9 @@ and exits so they can be filled in. Help the user with each:
   their name. Set `discord.enabled` true and put the id (as a string) in
   `discord.admins`. Default is DM-only with no server access, which is the right
   starting point.
+- **Matrix (recommended, fully private):** nothing to fill in by hand. After
+  `rodin-up` succeeds, run `rodin-matrix-setup <username>` (see step 3b). It
+  writes the `matrix` block and the token itself.
 - **Browser pane:** set `web.enabled` true and `web.tailnet_owner` to the user's
   Tailscale login email. Requests are authorised by asking Tailscale who the
   caller is, so this only works for traffic arriving over the tailnet.
@@ -118,11 +129,36 @@ The first launch shows a one-time "development channels" confirmation inside tha
 Claude. Attach with `tmux attach -t rodin:claude`, press Enter, then detach with
 Ctrl-b d. Tell the user this is expected.
 
+### 3b. Matrix accounts (recommended)
+
+Once `rodin-up` reports the stack is up, run `rodin-matrix-setup <username>` where
+`<username>` is what the user wants as their Matrix handle. It prompts for a
+password (the prompt is silent; the user types it, not you), creates their account
+and a bot account named `rodin`, stores the bot's token in `.env`, and turns on the
+Matrix frontend. Then restart relayd as it says.
+
+Tell the user how to connect:
+- Install Element (desktop or mobile) on a device that is on the same tailnet.
+- Sign in with the homeserver URL printed by the script
+  (`https://<server_name>:8448`) and their new account.
+- Start a direct message with `@rodin:<server_name>`. The bot joins and replies.
+
+What makes this secure, in plain terms: the server is only reachable from the
+user's own Tailscale devices, and the connection is TLS via Tailscale's
+certificate. Rooms are deliberately *not* end-to-end encrypted, because the relay
+bot speaks plain Matrix; the tailnet is the boundary. Say this if the user asks
+why Element shows no padlock.
+
+If `rodin-up` warned that `tailscale serve` failed, HTTPS certificates are off
+for their tailnet. They enable them once in the Tailscale admin console under
+DNS, then re-run `rodin-up`.
+
 ### 4. Verify
 
 - `tmux ls` shows a `rodin` session with `writer`, `relayd`, and `claude` windows.
 - `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8791/` returns 200.
 - `curl -s http://127.0.0.1:9210/metrics | head` returns relayd metrics.
+- `curl -s http://127.0.0.1:6167/_matrix/client/versions` returns JSON from the homeserver.
 - The user DMs their bot (or opens the browser pane) and gets a reply. For Discord
   they must share a server with the bot once before it can DM them.
 - Logs are in `/claude-env/rodin/logs/` if anything is off. `tail -f` the relevant one.
@@ -141,6 +177,10 @@ Ctrl-b d. Tell the user this is expected.
   paragraphs are diffed and posted to relayd's inject webhook so the relayed Claude
   can react in the chat pane. It needs `web.enabled` true and `LISTEN_CONV_ID` to
   match `web.conv_id`; the default is `web-user`, so set both the same.
+- **More Matrix users:** `rodin-matrix-setup` is for the owner. For another person
+  on the tailnet, register them with the token in
+  `/claude-env/rodin/matrix/registration_token` and add their id to
+  `matrix.admins` in the relay config if they should reach Claude.
 - **Stopping:** `tmux kill-session -t rodin`. Tailscale can stay up.
 - **Upgrading the relay or writer:** that is an image rebuild on the host
   (`capsule build-image --force --target rodin`). State is untouched.

@@ -8,10 +8,13 @@ set -euo pipefail
 STATE=/claude-env/rodin
 RELAY_DIR="$STATE/agent-relay"
 WRITER_ROOT="$STATE/writing"
+MATRIX_DIR="$STATE/matrix"
 SOCK="${RELAY_SOCKET:-/tmp/agent-relay.sock}"
 WRITER_PORT="${WRITER_PORT:-8791}"
-mkdir -p "$RELAY_DIR" "$WRITER_ROOT" "$STATE/logs"
-chmod 700 "$STATE" "$RELAY_DIR"
+MATRIX_PORT=6167
+MATRIX_PUBLIC_PORT=8448
+mkdir -p "$RELAY_DIR" "$WRITER_ROOT" "$MATRIX_DIR" "$STATE/logs"
+chmod 700 "$STATE" "$RELAY_DIR" "$MATRIX_DIR"
 
 # `capsule rodin` passes /dev/net/tun + NET_ADMIN, so tailscaled runs in kernel
 # mode and the container itself owns the tailnet address relayd binds to.
@@ -25,6 +28,24 @@ if ! tailscale ip -4 >/dev/null 2>&1; then
     echo "Tailscale is not connected yet. Run:  sudo tailscale up" >&2
     echo "then re-run rodin-up." >&2
     exit 1
+fi
+
+# Matrix homeserver: server_name is this container's MagicDNS name, fixed on
+# first run because Matrix user ids embed it.
+if [ ! -f "$MATRIX_DIR/server_name" ]; then
+    tailscale status --json | jq -r '.Self.DNSName | rtrimstr(".")' > "$MATRIX_DIR/server_name"
+fi
+SERVER_NAME="$(cat "$MATRIX_DIR/server_name")"
+if [ ! -f "$MATRIX_DIR/registration_token" ]; then
+    head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$MATRIX_DIR/registration_token"
+    chmod 600 "$MATRIX_DIR/registration_token"
+fi
+sed "s/__SERVER_NAME__/$SERVER_NAME/g" /opt/rodin/matrix/continuwuity.toml.tmpl > "$MATRIX_DIR/continuwuity.toml"
+
+# TLS for Matrix clients on the tailnet: https://<server_name>:8448 -> homeserver.
+if ! sudo tailscale serve status 2>/dev/null | grep -q ":$MATRIX_PUBLIC_PORT"; then
+    sudo tailscale serve --bg --https="$MATRIX_PUBLIC_PORT" "http://127.0.0.1:$MATRIX_PORT" >/dev/null \
+        || echo "warning: tailscale serve failed; enable HTTPS certificates in your Tailscale admin console (DNS > HTTPS Certificates)" >&2
 fi
 
 first_run=0
@@ -68,6 +89,10 @@ if ! tmux has-session -t rodin 2>/dev/null; then
     tmux new-session -d -s rodin -n writer -c /opt/rodin/vessel-writer \
         "WRITER_ROOT=$WRITER_ROOT WRITER_PORT=$WRITER_PORT WRITER_CLIENTLOG=$STATE/logs/writer-client.log ./run.sh 2>&1 | tee -a $STATE/logs/writer.log"
 fi
+if ! tmux list-windows -t rodin -F '#W' | grep -qx matrix; then
+    tmux new-window -t rodin -n matrix -c "$MATRIX_DIR" \
+        "CONDUWUIT_CONFIG=$MATRIX_DIR/continuwuity.toml continuwuity 2>&1 | tee -a $STATE/logs/matrix.log"
+fi
 if ! tmux list-windows -t rodin -F '#W' | grep -qx relayd; then
     rm -f "$SOCK"
     tmux new-window -t rodin -n relayd -c "$RELAY_DIR" \
@@ -77,8 +102,11 @@ fi
 cat << EOT
 rodin is up
   writer   http://127.0.0.1:$WRITER_PORT      (tmux rodin:writer)
+  matrix   https://$SERVER_NAME:$MATRIX_PUBLIC_PORT   (tmux rodin:matrix; tailnet only)
   relayd   $SOCK   (tmux rodin:relayd, loopback API on 127.0.0.1:9210)
   state    $STATE  (encrypted volume)
+
+No Matrix accounts yet?  rodin-matrix-setup <your-username>
 
 Start the relayed Claude session (in tmux so it survives your shell):
   tmux new-window -t rodin -n claude -c $STATE/claude-workspace \\
