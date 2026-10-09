@@ -21,6 +21,10 @@ RUN apt-get update && apt-get install -y \
     fd-find \
     bat \
     fzf \
+    tmux \
+    vim \
+    golang \
+    shellcheck \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true
@@ -50,6 +54,15 @@ RUN curl -fsSL https://get.pulumi.com | sh \
 # Install yq (YAML processor, pin version for reproducible builds)
 RUN curl -fLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.52.5/yq_linux_${TARGETARCH}" \
     && chmod +x /usr/local/bin/yq
+
+# Install Helix editor (pin version for reproducible builds)
+RUN if [ "$TARGETARCH" = "arm64" ]; then HX_ARCH="aarch64"; else HX_ARCH="x86_64"; fi \
+    && curl -fLo /tmp/helix.tar.xz "https://github.com/helix-editor/helix/releases/download/25.07.1/helix-25.07.1-${HX_ARCH}-linux.tar.xz" \
+    && mkdir -p /opt/helix \
+    && tar xJf /tmp/helix.tar.xz -C /opt/helix --strip-components=1 \
+    && ln -s /opt/helix/hx /usr/local/bin/hx \
+    && rm /tmp/helix.tar.xz
+ENV HELIX_RUNTIME=/opt/helix/runtime
 
 # Install AWS CLI v2 (map TARGETARCH to AWS naming convention)
 RUN if [ "$TARGETARCH" = "arm64" ]; then AWS_ARCH="aarch64"; else AWS_ARCH="x86_64"; fi \
