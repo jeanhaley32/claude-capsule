@@ -87,3 +87,18 @@ func TestBuildRunArgs_PreservesCoreShape(t *testing.T) {
 		t.Errorf("mounts missing from args: %v", args)
 	}
 }
+
+func TestBuildRunArgs_TunDevice(t *testing.T) {
+	base := buildRunArgs(ContainerConfig{ImageName: "img", ContainerName: "c"}, "vol", "ws")
+	if hasFlag(base, "--device") || hasFlag(base, "--cap-add") {
+		t.Error("tun device flags must be absent by default")
+	}
+
+	tun := buildRunArgs(ContainerConfig{ImageName: "img", ContainerName: "c", TunDevice: true}, "vol", "ws")
+	if got := argValue(tun, "--device"); got != "/dev/net/tun" {
+		t.Errorf("--device = %q, want /dev/net/tun", got)
+	}
+	if got := argValue(tun, "--cap-add"); got != "NET_ADMIN" {
+		t.Errorf("--cap-add = %q, want NET_ADMIN", got)
+	}
+}

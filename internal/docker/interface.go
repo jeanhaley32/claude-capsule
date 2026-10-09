@@ -60,6 +60,11 @@ type ContainerConfig struct {
 	MemoryLimit string // docker --memory (e.g. "8g"); "" => DefaultMemoryLimit
 	PidsLimit   string // docker --pids-limit (e.g. "512"); "" => DefaultPidsLimit
 	CPULimit    string // docker --cpus (e.g. "2"); "" => DefaultCPULimit (unset)
+
+	// TunDevice passes /dev/net/tun and NET_ADMIN into the container so
+	// tailscaled can run in kernel mode. Off for the base image; the rodin
+	// image needs it because relayd binds directly to the tailnet address.
+	TunDevice bool
 }
 
 // Validate checks that the container configuration is valid.

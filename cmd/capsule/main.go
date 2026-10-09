@@ -423,8 +423,9 @@ func newRodinCmd() *cobra.Command {
 		Use:   "rodin",
 		Short: "Start a container from the rodin image (agent-relay + vessel-writer baked in)",
 		Long: `Like start, but uses the image built from the Dockerfile's "rodin" stage,
-which bundles agent-relay, vessel-writer, and Tailscale. Inside the container,
-run rodin-up to bring the stack online.`,
+which bundles agent-relay, vessel-writer, and Tailscale. The container is
+started with /dev/net/tun and NET_ADMIN so tailscaled runs in kernel mode.
+Inside the container, run rodin-up to bring the stack online.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStart(cmd, "rodin")
 		},
@@ -534,6 +535,7 @@ func ensureContainerRunning(
 		ContainerName:    target.containerName,
 		VolumeMountPoint: mountPoint,
 		WorkspacePath:    target.workspacePath,
+		TunDevice:        target.imageTarget == "rodin",
 	}
 	if err := startContainerWithRetry(dockerManager, volumeManager, containerConfig, target.volumePath, password); err != nil {
 		cancelShutdown()

@@ -281,10 +281,11 @@ SOCK="${RELAY_SOCKET:-/tmp/agent-relay.sock}"
 WRITER_PORT="${WRITER_PORT:-8791}"
 mkdir -p "$RELAY_DIR" "$WRITER_ROOT"
 
-# No /dev/net/tun in the container, so tailscaled runs in userspace mode.
+# `capsule rodin` passes /dev/net/tun + NET_ADMIN, so tailscaled runs in kernel
+# mode and the container itself owns the tailnet address relayd binds to.
 if ! pgrep -x tailscaled >/dev/null; then
     sudo mkdir -p /var/run/tailscale
-    sudo nohup tailscaled --tun=userspace-networking --state="$STATE/tailscaled.state" \
+    sudo nohup tailscaled --state="$STATE/tailscaled.state" \
         >"$STATE/tailscaled.log" 2>&1 &
     sleep 2
 fi

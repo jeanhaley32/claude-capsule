@@ -150,6 +150,9 @@ func buildRunArgs(config ContainerConfig, volumeMount, workspaceMount string) []
 	if cpuLimit != "" {
 		args = append(args, "--cpus", cpuLimit)
 	}
+	if config.TunDevice {
+		args = append(args, "--device", "/dev/net/tun", "--cap-add", "NET_ADMIN")
+	}
 	return append(args,
 		"--entrypoint", "tail",
 		config.ImageName,
