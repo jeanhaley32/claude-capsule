@@ -1,8 +1,9 @@
 package embedded
 
 import (
-	_ "embed"
+	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,12 @@ import (
 
 //go:embed Dockerfile
 var Dockerfile []byte
+
+// rodinFiles are copied into the build context next to the Dockerfile so the
+// rodin stage can COPY them.
+//
+//go:embed rodin
+var rodinFiles embed.FS
 
 // BuildImage builds the named stage of the embedded Dockerfile and tags it imageName.
 func BuildImage(imageName, target string) error {
@@ -28,6 +35,10 @@ func BuildImage(imageName, target string) error {
 		return fmt.Errorf("failed to write Dockerfile: %w", err)
 	}
 
+	if err := writeBuildContext(tempDir); err != nil {
+		return err
+	}
+
 	// Build the image
 	cmd := exec.Command("docker", "build", "--target", target, "-t", imageName, tempDir)
 	cmd.Stdout = os.Stdout
@@ -38,6 +49,23 @@ func BuildImage(imageName, target string) error {
 	}
 
 	return nil
+}
+
+func writeBuildContext(dir string) error {
+	return fs.WalkDir(rodinFiles, "rodin", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dir, path)
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		data, err := rodinFiles.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dst, data, constants.FilePermissions)
+	})
 }
 
 // ImageExists checks if a Docker image exists locally.

@@ -268,68 +268,11 @@ RUN uv venv --python /usr/bin/python3 /opt/rodin/vessel-writer/.venv \
         -r /opt/rodin/vessel-writer/requirements.txt \
     && chown -R claude:claude /opt/rodin/vessel-writer/.venv
 
-RUN cat > /usr/local/bin/rodin-up << 'SCRIPT'
-#!/bin/bash
-# Bring up the rodin stack inside the container: tailscaled, vessel-writer, relayd.
-# All mutable state lives on the encrypted volume so it survives container rebuilds.
-set -euo pipefail
-
-STATE=/claude-env/rodin
-RELAY_DIR="$STATE/agent-relay"
-WRITER_ROOT="$STATE/writing"
-SOCK="${RELAY_SOCKET:-/tmp/agent-relay.sock}"
-WRITER_PORT="${WRITER_PORT:-8791}"
-mkdir -p "$RELAY_DIR" "$WRITER_ROOT"
-
-# `capsule rodin` passes /dev/net/tun + NET_ADMIN, so tailscaled runs in kernel
-# mode and the container itself owns the tailnet address relayd binds to.
-if ! pgrep -x tailscaled >/dev/null; then
-    sudo mkdir -p /var/run/tailscale
-    sudo nohup tailscaled --state="$STATE/tailscaled.state" \
-        >"$STATE/tailscaled.log" 2>&1 &
-    sleep 2
-fi
-if ! tailscale ip -4 >/dev/null 2>&1; then
-    echo "Tailscale is not connected yet. Run:  sudo tailscale up" >&2
-    echo "then re-run rodin-up." >&2
-    exit 1
-fi
-
-if [ ! -f "$RELAY_DIR/config.json" ]; then
-    cp /opt/rodin/agent-relay/config.example.json "$RELAY_DIR/config.json"
-    echo "Wrote $RELAY_DIR/config.json — set your admin ids, put bot tokens in $RELAY_DIR/.env, then re-run rodin-up." >&2
-    exit 1
-fi
-
-cat > "$STATE/mcp.json" << JSON
-{
-  "mcpServers": {
-    "relay":  { "command": "/usr/local/bin/relay-shim", "args": ["--socket", "$SOCK"] },
-    "writer": { "command": "/usr/local/bin/writer-mcp", "args": ["-base", "http://127.0.0.1:$WRITER_PORT"] }
-  }
-}
-JSON
-
-if ! tmux has-session -t rodin 2>/dev/null; then
-    tmux new-session -d -s rodin -n writer -c /opt/rodin/vessel-writer \
-        "WRITER_ROOT=$WRITER_ROOT WRITER_PORT=$WRITER_PORT ./run.sh"
-fi
-if ! tmux list-windows -t rodin -F '#W' | grep -qx relayd; then
-    rm -f "$SOCK"
-    tmux new-window -t rodin -n relayd -c "$RELAY_DIR" \
-        "set -a; [ -f .env ] && . ./.env; set +a; relayd --config config.json"
-fi
-
-cat << EOT
-rodin is up
-  writer   http://127.0.0.1:$WRITER_PORT   (tmux rodin:writer)
-  relayd   $SOCK   (tmux rodin:relayd)
-
-Start Claude with the relay channel and the writer tools:
-  claude --mcp-config $STATE/mcp.json --dangerously-load-development-channels server:relay
-EOT
-SCRIPT
-RUN chmod +x /usr/local/bin/rodin-up
+COPY rodin/rodin-up.sh /usr/local/bin/rodin-up
+# Managed CLAUDE.md: Claude Code reads it from this path on Linux, so the rodin
+# guide is present in every session without touching the shared volume's CLAUDE.md.
+COPY rodin/CLAUDE.md /etc/claude-code/CLAUDE.md
+RUN chmod 755 /usr/local/bin/rodin-up && chmod 644 /etc/claude-code/CLAUDE.md
 
 USER claude
 WORKDIR /workspace
